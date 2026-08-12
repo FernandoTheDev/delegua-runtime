@@ -1,0 +1,5 @@
+delegua_rt
+*.o
+*.ll
+*.s
+e[0-9]

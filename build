@@ -1,0 +1,72 @@
+# Delegua Runtime
+# 
+# Copyright 2026 Fernando the Dev
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+#!/bin/sh
+set -e
+
+CC=${CC:-clang}
+SRC="src/delegua_rt.c"
+TARGET="o"
+
+if ! command -v "$CC" >/dev/null 2>&1; then
+    echo "Erro: Compilador '$CC' não encontrado." >&2
+    echo "Instale o clang ou defina a variável de ambiente CC." >&2
+    exit 1
+fi
+
+if ! command -v pkg-config >/dev/null 2>&1; then
+    echo "Erro: 'pkg-config' não encontrado. É necessário para achar as bibliotecas." >&2
+    exit 1
+fi
+
+if ! pkg-config --exists bdw-gc; then
+    echo "Erro: Biblioteca 'bdw-gc' (Boehm GC) não encontrada pelo pkg-config." >&2
+    echo "Dica de instalação:" >&2
+    echo "  Ubuntu/Debian: sudo apt install libgc-dev" >&2
+    echo "  Arch Linux:    sudo pacman -S gc" >&2
+    exit 1
+fi
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -ll) TARGET="ll" ;;
+        -s)  TARGET="s"  ;;
+        -o)  TARGET="o"  ;;
+        *) echo "Flag desconhecida: $1. Use -ll, -s ou -o" >&2; exit 1 ;;
+    esac
+    shift
+done
+
+CFLAGS="--std=c99 -Wall -Wextra -pedantic-errors -Wconversion -Wshadow -fPIC -O2"
+CFLAGS="$CFLAGS $(pkg-config --cflags bdw-gc)"
+
+case "$TARGET" in
+    ll)
+        OUT="libdelegua_rt.ll"
+        # -S interrompe após a compilação, -emit-llvm gera o IR
+        "$CC" $CFLAGS -S -emit-llvm "$SRC" -o "$OUT"
+        ;;
+    s)
+        OUT="libdelegua_rt.s"
+        # -S gera apenas o assembly nativo
+        "$CC" $CFLAGS -S "$SRC" -o "$OUT"
+        ;;
+    o)
+        OUT="libdelegua_rt.o"
+        "$CC" $CFLAGS -c "$SRC" -o "$OUT"
+        ;;
+esac
+
+echo "OK -> $OUT"
