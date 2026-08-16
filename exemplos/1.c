@@ -1,5 +1,5 @@
 // gcc exemplos/1.c libdelegua_rt.o $(pkg-config --libs bdw-gc) -rdynamic -o e1
-#include "../src/delegua_.rt.h"
+#include "../src/delegua_rt.h"
 
 void delegua_main(void) {
     delegua_value numero = create_num(42);

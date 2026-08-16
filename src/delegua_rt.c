@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-#include "delegua_.rt.h"
+#include "delegua_rt.h"
 
 // contexto global
 program_context* context = null;
@@ -35,12 +35,14 @@ const char* delegua_type_strings[9] = {
 
 delegua_value delegua_dlopen(const char* name) {
     void* lib = dlopen(name, RTLD_NOW);
+    CHECK_NULL(name);
     if (lib == null)
         delegua_panicf("Erro ao abrir a lib '%s': %s", name, dlerror());
     return create_ptr(lib);
 }
 
 delegua_value delegua_dlsym_invoke(delegua_value ptr, const char* name, delegua_value vetor) {
+    CHECK_NULL(name);
     CHECK_ARG_TYPE(ptr.type, DELEGUA_T_PTR, 1);
     CHECK_ARG_TYPE(vetor.type, DELEGUA_T_VETOR, 3);
 

@@ -1,5 +1,5 @@
 // gcc exemplos/2.c libdelegua_rt.o $(pkg-config --libs bdw-gc) -rdynamic -o e2
-#include "../src/delegua_.rt.h"
+#include "../src/delegua_rt.h"
 
 void delegua_main(void) {
     delegua_value vetor = create_vetor();
