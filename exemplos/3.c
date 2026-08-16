@@ -1,4 +1,4 @@
-// gcc exemplos/3.c libdelegua_rt.o $(pkg-config --libs bdw-gc) -rdynamic -o 23
+// gcc exemplos/3.c libdelegua_rt.o $(pkg-config --libs bdw-gc) -rdynamic -o e3
 #include "../src/delegua_.rt.h"
 
 void delegua_main(void) {
