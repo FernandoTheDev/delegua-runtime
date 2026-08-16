@@ -196,6 +196,8 @@ delegua_value delegua_op_bxr /* ^ */  (delegua_value left, delegua_value right);
 delegua_value delegua_op_bnt /* ~ */  (delegua_value operand);                   // bit not (unário)
 delegua_value delegua_op_shl /* << */ (delegua_value left, delegua_value right); // shift left
 delegua_value delegua_op_shr /* >> */ (delegua_value left, delegua_value right); // shift right
+
+bool delegua_is_truthy(delegua_value val);
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 // funções builtin /////////////////////////////////////////////////////////////////////////////////

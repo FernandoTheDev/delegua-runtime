@@ -365,6 +365,23 @@ delegua_value delegua_op_shr(delegua_value l, delegua_value r) {
     return create_num(lv >> rv);
 }
 
+bool delegua_is_truthy(delegua_value val) {
+    switch (val.type) {
+        case DELEGUA_T_BOOL:  return val.value.b1;
+        case DELEGUA_T_NUM:   return val.value.num != 0;
+        case DELEGUA_T_REAL:  return val.value.real != 0.0;
+        case DELEGUA_T_TEXT:  return val.value.text.len > 0;
+        case DELEGUA_T_VETOR: // cai no mesmo case de TUPLA
+        case DELEGUA_T_TUPLA: return val.value.vetor->size > 0;
+        case DELEGUA_T_PTR:   return val.value.ptr != null;
+        case DELEGUA_T_NULO:  return false;
+        default:
+            delegua_panicf("Não é possível avaliar a veracidade do tipo '%s'.",
+                delegua_type_strings[val.type]);
+            return false; // nunca alcançado
+    }
+}
+
 // ponto de entrada
 int main(int argc, char* argv[]) {
     GC_INIT();
