@@ -21,42 +21,160 @@
 program_context* context = null;
 
 // faz tipo -> string
-const char* delegua_type_strings[] = {
-    [DELEGUA_T_NUM] = "numero",
-    [DELEGUA_T_REAL] = "real",
-    [DELEGUA_T_BOOL] = "logico",
-    [DELEGUA_T_TEXT] = "texto",
+const char* delegua_type_strings[9] = {
+    [DELEGUA_T_NUM]   = "numero",
+    [DELEGUA_T_REAL]  = "real",
+    [DELEGUA_T_BOOL]  = "logico",
+    [DELEGUA_T_TEXT]  = "texto",
+    [DELEGUA_T_VETOR] = "vetor",
+    [DELEGUA_T_TUPLA] = "tupla",
+    [DELEGUA_T_MAP]   = "dicionário",
+    [DELEGUA_T_NULO]  = "nulo",
+    [DELEGUA_T_PTR]   = "ponteiro",
 };
 
-delegua_value create_value_num(i64 num) {
-    return (delegua_value) { .type = DELEGUA_T_NUM, .value.num = num };
+delegua_value delegua_dlopen(const char* name) {
+    void* lib = dlopen(name, RTLD_NOW);
+    if (lib == null)
+        delegua_panicf("Erro ao abrir a lib '%s': %s", name, dlerror());
+    return create_ptr(lib);
 }
 
-delegua_value create_value_real(f64 real) {
-    return (delegua_value) { .type = DELEGUA_T_REAL, .value.real = real };
+delegua_value delegua_dlsym_invoke(delegua_value ptr, const char* name, delegua_value vetor) {
+    CHECK_ARG_TYPE(ptr.type, DELEGUA_T_PTR, 1);
+    CHECK_ARG_TYPE(vetor.type, DELEGUA_T_VETOR, 3);
+
+    delegua_native_fn fn = (delegua_native_fn) dlsym(ptr.value.ptr, name);
+    if (fn == null)
+        delegua_panicf("Erro ao chamar a função '%s'.", name);
+
+    return fn(vetor.value.vetor->size, vetor.value.vetor->values);
 }
 
-delegua_value create_value_bool(bool b1) {
-    return (delegua_value) { .type = DELEGUA_T_BOOL, .value.b1 = b1 };
+delegua_value delegua_close(delegua_value ptr) {
+    CHECK_ARG_TYPE(ptr.type, DELEGUA_T_PTR, 1);
+    dlclose(ptr.value.ptr);
+    return create_ptr(null);
+}
+
+delegua_value delegua_vetor_adicionar(delegua_value* vetor, delegua_value value) {
+    if (vetor->value.vetor->size == vetor->value.vetor->cap) {
+        // faz o resize
+        sz new_cap = vetor->value.vetor->cap * 2;
+        delegua_value* values = GC_REALLOC(vetor->value.vetor->values, sizeof(delegua_value) * new_cap);
+        vetor->value.vetor->values = values;
+        vetor->value.vetor->cap = new_cap;
+    }
+    vetor->value.vetor->values[vetor->value.vetor->size++] = value;
+    return *vetor;
+}
+
+void delegua_escreva_intern(delegua_value val) {
+    switch (val.type) {
+        case DELEGUA_T_BOOL:
+            printf("%s", val.value.b1 ? "verdadeiro" : "falso");
+            break;
+        case DELEGUA_T_NUM:
+            printf("%ld", val.value.num);
+            break;
+        case DELEGUA_T_REAL:
+            printf("%g", val.value.real);
+            break;
+        case DELEGUA_T_TEXT:
+            printf("%s", val.value.text.ptr);
+            break;
+        case DELEGUA_T_VETOR:
+            printf("[");
+            sz size = val.value.vetor->size;
+            for (sz i = 0; i < size; i++) {
+                delegua_escreva_intern(val.value.vetor->values[i]);
+                if (i + 1 < size)
+                    printf(", ");
+            }
+            printf("]");
+            break;
+        default:
+            delegua_panicf("Tipo desconhecido '%s', não é possivel escrever ele.", delegua_type_strings[val.type]);
+            break;
+        }
+}
+
+void delegua_escreva(sz count, ...) {
+    va_list args;
+    va_start(args, count);
+
+    for (sz i = 0; i < count; i++)
+        delegua_escreva_intern(va_arg(args, delegua_value));
+
+    va_end(args);
+    printf("\n");
 }
 
 delegua_value delegua_op_cast(delegua_value from, delegua_type to) {
-    // TODO:
-    // delegua_type result;
-    
+    const char* t1 = delegua_type_strings[from.type];
+    const char* t2 = delegua_type_strings[to];
+
+    if (!delegua_type_valid_to_cast(from.type) || !delegua_type_valid_to_cast(to))
+        delegua_panicf("Não é possível fazer o cast entre '%s' e '%s'.", t1, t2);
+
     switch (from.type) {
+        case DELEGUA_T_BOOL:
+            switch (to) {
+                case DELEGUA_T_NUM:  return create_num(from.value.b1 ? 1 : 0);
+                case DELEGUA_T_REAL: return create_real(from.value.b1 ? 1.0 : 0.0);
+                case DELEGUA_T_TEXT: return create_text(from.value.b1 ? "verdadeiro" : "falso");
+                default:             return from;
+            }
+        case DELEGUA_T_NUM:
+            switch (to) {
+                case DELEGUA_T_BOOL: return create_bool(from.value.num != 0);
+                case DELEGUA_T_REAL: return create_real((f64) from.value.num);
+                case DELEGUA_T_TEXT: {
+                    char buf[32];
+                    snprintf(buf, sizeof(buf), "%" PRIi64, from.value.num);
+                    return create_text(buf);
+                }
+                default: return from;
+            }
+
+        case DELEGUA_T_REAL:
+            switch (to) {
+                case DELEGUA_T_BOOL: return create_bool(from.value.real != 0.0);
+                case DELEGUA_T_NUM:  return create_num((i64) from.value.real);
+                case DELEGUA_T_TEXT: {
+                    char buf[32];
+                    snprintf(buf, sizeof(buf), "%g", from.value.real);
+                    return create_text(buf);
+                }
+                default: return from;
+            }
+        
+        case DELEGUA_T_TEXT:
+            switch (to) {
+                case DELEGUA_T_NUM:  return create_num(strtoll(from.value.text.ptr, NULL, 10));
+                case DELEGUA_T_REAL: return create_real(strtod(from.value.text.ptr, NULL));
+                case DELEGUA_T_BOOL: return create_bool(from.value.text.len > 0);
+                default: return from;
+            }
         default:
-            // TODO: melhorar
-            delegua_panicf("Não é possível fazer o cast entre '%s' e '%s'.", delegua_type_strings[from.type], delegua_type_strings[to]);
+            // código morto
+            // nunca cai aqui no default pois todos os casos válidos já serão tratados        
             return from;
     }
-
-    return from;
 }
 
 delegua_value delegua_op_add(delegua_value l, delegua_value r) {
-    // TODO: expandir
     CHECK_CAST(l, r);
+    switch (l.type) {
+        case DELEGUA_T_NUM:  return create_num(l.value.num + r.value.num);
+        case DELEGUA_T_REAL: return create_real(l.value.real + r.value.real);
+        case DELEGUA_T_TEXT: return create_text_concat(l, r);
+        default:
+            delegua_panicf("Não é possível somar o tipo '%s' com o tipo '%s'.",
+                delegua_type_strings[l.type], delegua_type_strings[r.type]);
+            break;
+    }
+    // isso nunca será executado, mas sem ele o compilador C vai gerar um aviso
     return l;
 }
 
