@@ -7,7 +7,7 @@ void delegua_main(void) {
     delegua_vetor_adicionar(&args, create_num(7));
 
     delegua_value handler = delegua_dlopen("./ffi/soma.so");
-    delegua_value result = delegua_dlsym_invoke(handler, "soma", args);
+    delegua_value result = delegua_dlsym_invoke(handler, "soma", handler);
     delegua_close(handler);
     
     delegua_escreva(1, result);

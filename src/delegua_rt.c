@@ -41,8 +41,8 @@ delegua_value delegua_dlopen(const char* name) {
 }
 
 delegua_value delegua_dlsym_invoke(delegua_value ptr, const char* name, delegua_value vetor) {
-    if (ptr.type != DELEGUA_T_PTR)
-        delegua_panicf("Isso não é uma lib válida.");
+    CHECK_ARG_TYPE(ptr.type, DELEGUA_T_PTR, 1);
+    CHECK_ARG_TYPE(vetor.type, DELEGUA_T_VETOR, 3);
 
     delegua_native_fn fn = (delegua_native_fn) dlsym(ptr.value.ptr, name);
     if (fn == null)
@@ -52,8 +52,7 @@ delegua_value delegua_dlsym_invoke(delegua_value ptr, const char* name, delegua_
 }
 
 delegua_value delegua_close(delegua_value ptr) {
-    if (ptr.type != DELEGUA_T_PTR)
-        delegua_panicf("Isso não é uma lib válida.");
+    CHECK_ARG_TYPE(ptr.type, DELEGUA_T_PTR, 1);
     dlclose(ptr.value.ptr);
     return create_ptr(null);
 }

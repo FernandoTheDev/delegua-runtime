@@ -60,6 +60,11 @@ typedef void* any;
         else (left) = delegua_op_cast(left, (right).type);                             \
     }                                                                                  \
 } while(0)
+#define CHECK_ARG_TYPE(type, expected, n) do {                                  \
+    if ((type) != (expected))                                                   \
+        delegua_panicf("A função '%s' esperava o tipo '%s' mas recebeu '%s' no '%d' argumento.", \
+            __func__, delegua_type_strings[(expected)], delegua_type_strings[(type)], (n)); \
+} while(0)
 
 enum delegua_type {
     // esse tipo não tem valor, só mantém o `delegua_type` mesmo
@@ -121,9 +126,17 @@ static inline delegua_value create_bool(bool b1) {
     return (delegua_value) { .type = DELEGUA_T_BOOL, .value.b1 = b1 };
 }
 
-static inline delegua_value create_text(const char* ptr) {
+static inline delegua_value create_text_len(const char* ptr, sz len) {
     CHECK_NULL(ptr);
-    return (delegua_value) { .type = DELEGUA_T_TEXT, .value.text.ptr = ptr, .value.text.len = strlen(ptr) };
+    char* str = GC_MALLOC_ATOMIC(len + 1);
+    CHECK_NULL(str);
+    memcpy(str, ptr, len);
+    str[len] = '\0';
+    return (delegua_value) { .type = DELEGUA_T_TEXT, .value.text.ptr = str, .value.text.len = len };
+}
+
+static inline delegua_value create_text(const char* ptr) {
+    return create_text_len(ptr, strlen(ptr));
 }
 
 static inline delegua_value create_text_concat(delegua_value l, delegua_value r) {
