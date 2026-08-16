@@ -65,6 +65,11 @@ typedef void* any;
         delegua_panicf("A função '%s' esperava o tipo '%s' mas recebeu '%s' no '%d' argumento.", \
             __func__, delegua_type_strings[(expected)], delegua_type_strings[(type)], (n)); \
 } while(0)
+#define CHECK_ARGC(argc, expected) do {                                  \
+    if ((argc) != (expected))                                                   \
+        delegua_panicf("A função '%s' esperava '%d' argumentos mas recebeu '%d'.", \
+            __func__, (expected), (argc)); \
+} while(0)
 
 enum delegua_type {
     // esse tipo não tem valor, só mantém o `delegua_type` mesmo
@@ -84,6 +89,8 @@ typedef enum delegua_type delegua_type;
 typedef struct delegua_value delegua_value;
 typedef struct program_context program_context;
 typedef struct delegua_vetor_data delegua_vetor_data;
+
+extern const char* delegua_type_strings[9];
 
 static inline bool delegua_type_valid_to_cast(delegua_type t) {
     return t >= DELEGUA_T_BOOL && t <= DELEGUA_T_TEXT;

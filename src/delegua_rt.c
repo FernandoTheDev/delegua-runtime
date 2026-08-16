@@ -36,7 +36,7 @@ const char* delegua_type_strings[9] = {
 delegua_value delegua_dlopen(const char* name) {
     void* lib = dlopen(name, RTLD_NOW);
     if (lib == null)
-        delegua_panicf("Erro ao abrir a lib '%s'.", name);
+        delegua_panicf("Erro ao abrir a lib '%s': %s", name, dlerror());
     return create_ptr(lib);
 }
 
