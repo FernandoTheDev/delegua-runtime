@@ -180,6 +180,191 @@ delegua_value delegua_op_add(delegua_value l, delegua_value r) {
     return l;
 }
 
+static inline i64 delegua_as_i64_bitwise(delegua_value v, int argn) {
+    switch (v.type) {
+        case DELEGUA_T_NUM:  return v.value.num;
+        case DELEGUA_T_REAL: return (i64) v.value.real;
+        case DELEGUA_T_BOOL: return v.value.b1 ? 1 : 0;
+        default:
+            delegua_panicf("Operador bit a bit espera 'numero', 'real' ou 'logico' mas recebeu '%s' no '%d' argumento.",
+                delegua_type_strings[v.type], argn);
+            return 0; // nunca alcançado
+    }
+}
+
+delegua_value delegua_op_sub(delegua_value l, delegua_value r) {
+    CHECK_CAST(l, r);
+    switch (l.type) {
+        case DELEGUA_T_NUM:  return create_num(l.value.num - r.value.num);
+        case DELEGUA_T_REAL: return create_real(l.value.real - r.value.real);
+        default:
+            delegua_panicf("Não é possível subtrair o tipo '%s' com o tipo '%s'.",
+                delegua_type_strings[l.type], delegua_type_strings[r.type]);
+            break;
+    }
+    return l; // código morto, evita warning
+}
+
+delegua_value delegua_op_mul(delegua_value l, delegua_value r) {
+    CHECK_CAST(l, r);
+    switch (l.type) {
+        case DELEGUA_T_NUM:  return create_num(l.value.num * r.value.num);
+        case DELEGUA_T_REAL: return create_real(l.value.real * r.value.real);
+        default:
+            delegua_panicf("Não é possível multiplicar o tipo '%s' com o tipo '%s'.",
+                delegua_type_strings[l.type], delegua_type_strings[r.type]);
+            break;
+    }
+    return l;
+}
+
+delegua_value delegua_op_div(delegua_value l, delegua_value r) {
+    CHECK_CAST(l, r);
+    switch (l.type) {
+        case DELEGUA_T_NUM:
+            if (r.value.num == 0)
+                delegua_panicf("Divisão por zero.");
+            return create_num(l.value.num / r.value.num);
+        case DELEGUA_T_REAL:
+            if (r.value.real == 0.0)
+                delegua_panicf("Divisão por zero.");
+            return create_real(l.value.real / r.value.real);
+        default:
+            delegua_panicf("Não é possível dividir o tipo '%s' com o tipo '%s'.",
+                delegua_type_strings[l.type], delegua_type_strings[r.type]);
+            break;
+    }
+    return l;
+}
+
+delegua_value delegua_op_mod(delegua_value l, delegua_value r) {
+    CHECK_CAST(l, r);
+    switch (l.type) {
+        case DELEGUA_T_NUM:
+            if (r.value.num == 0)
+                delegua_panicf("Divisão por zero (módulo).");
+            return create_num(l.value.num % r.value.num);
+        default:
+            delegua_panicf("Não é possível calcular o módulo entre o tipo '%s' e o tipo '%s'.",
+                delegua_type_strings[l.type], delegua_type_strings[r.type]);
+            break;
+    }
+    return l;
+}
+
+delegua_value delegua_op_eq(delegua_value l, delegua_value r) {
+    CHECK_CAST(l, r);
+    switch (l.type) {
+        case DELEGUA_T_NUM:  return create_bool(l.value.num == r.value.num);
+        case DELEGUA_T_REAL: return create_bool(l.value.real == r.value.real);
+        case DELEGUA_T_BOOL: return create_bool(l.value.b1 == r.value.b1);
+        case DELEGUA_T_TEXT:
+            return create_bool(
+                l.value.text.len == r.value.text.len &&
+                memcmp(l.value.text.ptr, r.value.text.ptr, l.value.text.len) == 0
+            );
+        default:
+            // tipos não comparáveis (vetor, ptr, etc) -> sempre falso, sem panic
+            return create_bool(false);
+    }
+}
+
+delegua_value delegua_op_neq(delegua_value l, delegua_value r) {
+    delegua_value eq = delegua_op_eq(l, r);
+    return create_bool(!eq.value.b1);
+}
+
+delegua_value delegua_op_gt(delegua_value l, delegua_value r) {
+    CHECK_CAST(l, r);
+    switch (l.type) {
+        case DELEGUA_T_NUM:  return create_bool(l.value.num > r.value.num);
+        case DELEGUA_T_REAL: return create_bool(l.value.real > r.value.real);
+        default:
+            delegua_panicf("Não é possível comparar (>) o tipo '%s' com o tipo '%s'.",
+                delegua_type_strings[l.type], delegua_type_strings[r.type]);
+            break;
+    }
+    return create_bool(false);
+}
+
+delegua_value delegua_op_ge(delegua_value l, delegua_value r) {
+    CHECK_CAST(l, r);
+    switch (l.type) {
+        case DELEGUA_T_NUM:  return create_bool(l.value.num >= r.value.num);
+        case DELEGUA_T_REAL: return create_bool(l.value.real >= r.value.real);
+        default:
+            delegua_panicf("Não é possível comparar (>=) o tipo '%s' com o tipo '%s'.",
+                delegua_type_strings[l.type], delegua_type_strings[r.type]);
+            break;
+    }
+    return create_bool(false);
+}
+
+delegua_value delegua_op_lt(delegua_value l, delegua_value r) {
+    CHECK_CAST(l, r);
+    switch (l.type) {
+        case DELEGUA_T_NUM:  return create_bool(l.value.num < r.value.num);
+        case DELEGUA_T_REAL: return create_bool(l.value.real < r.value.real);
+        default:
+            delegua_panicf("Não é possível comparar (<) o tipo '%s' com o tipo '%s'.",
+                delegua_type_strings[l.type], delegua_type_strings[r.type]);
+            break;
+    }
+    return create_bool(false);
+}
+
+delegua_value delegua_op_le(delegua_value l, delegua_value r) {
+    CHECK_CAST(l, r);
+    switch (l.type) {
+        case DELEGUA_T_NUM:  return create_bool(l.value.num <= r.value.num);
+        case DELEGUA_T_REAL: return create_bool(l.value.real <= r.value.real);
+        default:
+            delegua_panicf("Não é possível comparar (<=) o tipo '%s' com o tipo '%s'.",
+                delegua_type_strings[l.type], delegua_type_strings[r.type]);
+            break;
+    }
+    return create_bool(false);
+}
+
+delegua_value delegua_op_bor(delegua_value l, delegua_value r) {
+    i64 lv = delegua_as_i64_bitwise(l, 1);
+    i64 rv = delegua_as_i64_bitwise(r, 2);
+    return create_num(lv | rv);
+}
+
+delegua_value delegua_op_bnd(delegua_value l, delegua_value r) {
+    i64 lv = delegua_as_i64_bitwise(l, 1);
+    i64 rv = delegua_as_i64_bitwise(r, 2);
+    return create_num(lv & rv);
+}
+
+delegua_value delegua_op_bxr(delegua_value l, delegua_value r) {
+    i64 lv = delegua_as_i64_bitwise(l, 1);
+    i64 rv = delegua_as_i64_bitwise(r, 2);
+    return create_num(lv ^ rv);
+}
+
+delegua_value delegua_op_bnt(delegua_value operand) {
+    i64 v = delegua_as_i64_bitwise(operand, 1);
+    return create_num(~v);
+}
+
+delegua_value delegua_op_shl(delegua_value l, delegua_value r) {
+    i64 lv = delegua_as_i64_bitwise(l, 1);
+    i64 rv = delegua_as_i64_bitwise(r, 2);
+    if (rv < 0 || rv >= 64)
+        delegua_panicf("Deslocamento (<<) inválido: '%" PRIi64 "' está fora do intervalo [0, 63].", rv);
+    return create_num(lv << rv);
+}
+
+delegua_value delegua_op_shr(delegua_value l, delegua_value r) {
+    i64 lv = delegua_as_i64_bitwise(l, 1);
+    i64 rv = delegua_as_i64_bitwise(r, 2);
+    if (rv < 0 || rv >= 64)
+        delegua_panicf("Deslocamento (>>) inválido: '%" PRIi64 "' está fora do intervalo [0, 63].", rv);
+    return create_num(lv >> rv);
+}
+
 // ponto de entrada
 int main(int argc, char* argv[]) {
     GC_INIT();
