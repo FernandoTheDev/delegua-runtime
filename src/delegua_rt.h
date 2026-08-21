@@ -203,7 +203,9 @@ bool delegua_is_truthy(delegua_value val);
 // funções builtin /////////////////////////////////////////////////////////////////////////////////
 void delegua_escreva_intern(delegua_value val); // o primeiro argumento é a quantidade de argumentos passados 
 void delegua_escreva(sz count, ...);
+
 delegua_value delegua_vetor_adicionar(delegua_value* vetor, delegua_value value); // adiciona um elemento ao vetor
+delegua_value delegua_vetor_obter(delegua_value* vetor, delegua_value value); // retorna um elemento pelo indice
 /////////////////////////////////////////////////////////////////////////////////////////////////////
 
 // contém o contexto global do programa
