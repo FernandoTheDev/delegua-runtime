@@ -205,7 +205,8 @@ void delegua_escreva_intern(delegua_value val); // o primeiro argumento é a qua
 void delegua_escreva(sz count, ...);
 
 delegua_value delegua_vetor_adicionar(delegua_value* vetor, delegua_value value); // adiciona um elemento ao vetor
-delegua_value delegua_vetor_obter(delegua_value* vetor, delegua_value value); // retorna um elemento pelo indice
+delegua_value delegua_vetor_obter(delegua_value* vetor, delegua_value idx); // retorna um elemento pelo indice
+delegua_value delegua_vetor_setar(delegua_value* vetor, delegua_value idx, delegua_value value); // retorna um elemento pelo indice
 /////////////////////////////////////////////////////////////////////////////////////////////////////
 
 // contém o contexto global do programa
