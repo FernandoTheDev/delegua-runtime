@@ -68,7 +68,7 @@ delegua_value delegua_vetor_obter(delegua_value* vetor, delegua_value value)
     i64 idx = value.value.num;
     i64 size = (i64) vetor->value.vetor->size;
 
-    if (idx > size)
+    if (idx >= size)
         delegua_panicf("Indice '%ld' do vetor fora do intervalo de '%ld' elementos.", idx, size);
 
     return vetor->value.vetor->values[idx];
