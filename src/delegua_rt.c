@@ -376,11 +376,14 @@ delegua_value delegua_op_bxr(delegua_value l, delegua_value r) {
 }
 
 delegua_value delegua_op_bnt(delegua_value operand) {
+    CHECK_ARG_TYPE(operand.type, DELEGUA_T_NUM, 1);
     i64 v = delegua_as_i64_bitwise(operand, 1);
     return create_num(~v);
 }
 
 delegua_value delegua_op_shl(delegua_value l, delegua_value r) {
+    CHECK_ARG_TYPE(l.type, DELEGUA_T_NUM, 1);
+    CHECK_ARG_TYPE(r.type, DELEGUA_T_NUM, 2);
     i64 lv = delegua_as_i64_bitwise(l, 1);
     i64 rv = delegua_as_i64_bitwise(r, 2);
     if (rv < 0 || rv >= 64)
@@ -411,6 +414,19 @@ bool delegua_is_truthy(delegua_value val) {
                 delegua_type_strings[val.type]);
             return false; // nunca alcançado
     }
+}
+
+delegua_value delegua_op_not(delegua_value operand) {
+    switch (operand.type) {
+        case DELEGUA_T_NUM:  return create_bool(!(operand.value.num));
+        case DELEGUA_T_REAL: return create_bool(!((bool) operand.value.real));
+        case DELEGUA_T_BOOL: return create_bool(!(operand.value.b1));
+        default:
+            delegua_panicf("Não é possível aplicar (!) no tipo '%s'.",
+                delegua_type_strings[operand.type]);
+            break;
+    }
+    return create_bool(false);
 }
 
 // ponto de entrada
