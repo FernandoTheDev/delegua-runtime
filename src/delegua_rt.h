@@ -53,7 +53,7 @@ typedef size_t sz;
 typedef void* any;
 
 #define null NULL
-#define CHECK_NULL(ptr) assert(ptr != null)
+#define CHECK_NULL(ptr) do { if ((ptr) == null) delegua_panic("Ponteiro nulo ou memória insuficiente."); } while (0)
 #define CHECK_CAST(left, right) do {                                                   \
     if ((left).type != (right).type) {                                                 \
         if ((left).type > (right).type) (right) = delegua_op_cast(right, (left).type); \
@@ -63,17 +63,18 @@ typedef void* any;
 #define CHECK_ARG_TYPE(type, expected, n) do {                                  \
     if ((type) != (expected))                                                   \
         delegua_panicf("A função '%s' esperava o tipo '%s' mas recebeu '%s' no '%d' argumento.", \
-            __func__, delegua_type_strings[(expected)], delegua_type_strings[(type)], (n)); \
+            __func__, delegua_type_name(expected), delegua_type_name(type), (n)); \
 } while(0)
 #define CHECK_ARGC(argc, expected) do {                                  \
     if ((argc) != (expected))                                                   \
         delegua_panicf("A função '%s' esperava '%d' argumentos mas recebeu '%d'.", \
             __func__, (expected), (argc)); \
 } while(0)
+#define GET_TYPE(expr) delegua_type_name((expr).type)
 
 enum delegua_type {
     // esse tipo não tem valor, só mantém o `delegua_type` mesmo
-    DELEGUA_T_NULO,  // TODO: nulo
+    DELEGUA_T_NULO,  // nulo
     DELEGUA_T_PTR,  // ptr
 
     /* 0 */ DELEGUA_T_BOOL,  // logico
@@ -82,7 +83,9 @@ enum delegua_type {
     /* 3 */ DELEGUA_T_TEXT,  // texto
     DELEGUA_T_VETOR, // vetor
     DELEGUA_T_TUPLA, // tupla
-    DELEGUA_T_MAP,   // TODO: dicionário
+    DELEGUA_T_MAP,
+    DELEGUA_T_CLASSE, DELEGUA_T_OBJETO, DELEGUA_T_FUNCAO, DELEGUA_T_BIBLIOTECA,
+    DELEGUA_T_COUNT,
 };
 
 typedef enum delegua_type delegua_type;
@@ -90,7 +93,10 @@ typedef struct delegua_value delegua_value;
 typedef struct program_context program_context;
 typedef struct delegua_vetor_data delegua_vetor_data;
 
-extern const char* delegua_type_strings[9];
+extern const char* delegua_type_strings[DELEGUA_T_COUNT];
+const char *delegua_type_name(delegua_type type);
+static inline void delegua_panic(const char *message);
+static inline void delegua_panicf(const char *format, ...);
 
 static inline bool delegua_type_valid_to_cast(delegua_type t) {
     return t >= DELEGUA_T_BOOL && t <= DELEGUA_T_TEXT;
@@ -116,7 +122,7 @@ struct delegua_value {
         } text;
         delegua_vetor_data* vetor; // tuplas também ficarão aqui
         void* ptr;
-        // TODO: map
+        // mapas, classes, objetos e funções usam value.ptr
     } value;
 };
 
@@ -135,6 +141,7 @@ static inline delegua_value create_bool(bool b1) {
 
 static inline delegua_value create_text_len(const char* ptr, sz len) {
     CHECK_NULL(ptr);
+    if (len == SIZE_MAX) delegua_panic("Texto grande demais.");
     char* str = GC_MALLOC_ATOMIC(len + 1);
     CHECK_NULL(str);
     memcpy(str, ptr, len);
@@ -143,10 +150,14 @@ static inline delegua_value create_text_len(const char* ptr, sz len) {
 }
 
 static inline delegua_value create_text(const char* ptr) {
+    CHECK_NULL(ptr);
     return create_text_len(ptr, strlen(ptr));
 }
 
 static inline delegua_value create_text_concat(delegua_value l, delegua_value r) {
+    CHECK_ARG_TYPE(l.type, DELEGUA_T_TEXT, 1);
+    CHECK_ARG_TYPE(r.type, DELEGUA_T_TEXT, 2);
+    if (r.value.text.len >= SIZE_MAX - l.value.text.len) delegua_panic("Texto grande demais.");
     sz size = l.value.text.len + r.value.text.len;
     sz l1 = l.value.text.len;
     sz l2 = r.value.text.len;
@@ -155,7 +166,7 @@ static inline delegua_value create_text_concat(delegua_value l, delegua_value r)
     memcpy(ptr, l.value.text.ptr, l1);
     memcpy(ptr + l1, r.value.text.ptr, l2);
     ptr[size] = '\0';
-    return create_text(ptr);   
+    return create_text_len(ptr, size);
 }
 
 static inline delegua_value create_ptr(void* ptr) {
@@ -199,6 +210,7 @@ delegua_value delegua_op_shr /* >> */ (delegua_value left, delegua_value right);
 delegua_value delegua_op_not /* ! */  (delegua_value operand);                   // not (unário)
 
 bool delegua_is_truthy(delegua_value val);
+delegua_value delegua_slice(delegua_value val, delegua_value ini, delegua_value end);
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 // funções builtin /////////////////////////////////////////////////////////////////////////////////
@@ -218,13 +230,15 @@ struct program_context {
 
 // cria o contexto global do programa
 static inline void program_create(program_context** context, int argc, char* argv[]) {
+    CHECK_NULL(context);
+    if (argc < 0 || (argc > 0 && argv == null)) delegua_panic("Argumentos inválidos.");
     char** _argv = null;
     program_context* ctx;
     
     if (argc < 1)
         goto end;
 
-    _argv = GC_MALLOC_ATOMIC(/* 8 */ sizeof(char*) * (sz) argc);
+    _argv = GC_MALLOC(/* 8 */ sizeof(char*) * (sz) argc);
     CHECK_NULL(_argv);
     for (int i = 0; i < argc; i++)
         _argv[i] = argv[i];
@@ -252,8 +266,8 @@ extern void delegua_main(void); // todo backend precisa gerar essa função ao i
 
 // funções auxiliares para erro //////////////////////////////////////////////////////////////////
 static inline void delegua_panic(const char* message) {
-    printf("Erro interno do runtime delegua: %s\n", message);
-    printf("Crie um issue no repositório: %s\n", DELEGUA_RT_REPO);
+    fprintf(stderr, "Erro interno do runtime delegua: %s\n", message);
+    fprintf(stderr, "Crie um issue no repositório: %s\n", DELEGUA_RT_REPO);
     exit(EXIT_FAILURE);
 }
 
@@ -273,5 +287,23 @@ delegua_value delegua_dlopen(const char* name);
 delegua_value delegua_dlsym_invoke(delegua_value ptr, const char* name, delegua_value vetor);
 delegua_value delegua_close(delegua_value ptr);
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+/* Coleções e objetos usam memória gerenciada pelo GC. */
+static inline delegua_value create_nulo(void) { return (delegua_value){.type = DELEGUA_T_NULO}; }
+delegua_value create_tupla(sz count, const delegua_value *values);
+delegua_value create_map(void);
+delegua_value delegua_map_setar(delegua_value map, delegua_value key, delegua_value value);
+delegua_value delegua_map_obter(delegua_value map, delegua_value key);
+bool delegua_map_contem(delegua_value map, delegua_value key);
+bool delegua_map_remover(delegua_value map, delegua_value key);
+sz delegua_tamanho(delegua_value value);
+delegua_value create_funcao(delegua_native_fn fn, sz aridade);
+delegua_value create_classe(const char *nome, delegua_value superclasse);
+void delegua_classe_metodo(delegua_value classe, const char *nome, delegua_value funcao);
+delegua_value delegua_instanciar(delegua_value classe, sz argc, delegua_value *argv);
+delegua_value delegua_objeto_obter(delegua_value objeto, const char *nome);
+delegua_value delegua_objeto_setar(delegua_value objeto, const char *nome, delegua_value value);
+delegua_value delegua_chamar(delegua_value funcao, sz argc, delegua_value *argv);
 
 #endif
