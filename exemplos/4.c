@@ -1,5 +1,5 @@
-// cc exemplos/4.c libdelegua_rt.o $(pkg-config --libs bdw-gc) -rdynamic -o e4
-#include "../src/delegua_.rt.h"
+// gcc exemplos/4.c libdelegua_rt.o $(pkg-config --libs bdw-gc) -rdynamic -o e4
+#include "../src/delegua_rt.h"
 
 void delegua_main(void) {
     delegua_value s1 = create_text("Fernando");

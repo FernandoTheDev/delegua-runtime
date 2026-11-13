@@ -1,5 +1,5 @@
 // gcc -shared -fPIC ffi/soma.c -o ffi/soma.so -I./src
-#include "../src/delegua_.rt.h"
+#include "../src/delegua_rt.h"
 
 delegua_value soma(sz argc, delegua_value* argv) {
     CHECK_ARGC(argc, 2);

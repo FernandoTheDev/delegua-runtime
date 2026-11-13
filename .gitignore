@@ -1,8 +1,10 @@
 delegua_rt
 *.ll
 *.o
-*.s*
+*.s
 e[0-9]
 ig
 *.txt
 .vscode
+
+.build/
