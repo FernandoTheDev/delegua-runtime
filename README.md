@@ -7,7 +7,7 @@ os detalhes. A linguagem compilada não expõe todos os pontos de entrada da API
 
 ## Build e testes
 
-Requer Clang ou GCC, pkg-config e Boehm GC com headers (`bdw-gc`).
+Requer Clang ou GCC, Python 3, pkg-config, Boehm GC (`bdw-gc`) e libcurl >=7.86 com headers.
 
 ```sh
 ./build
@@ -25,7 +25,7 @@ combina os módulos em `libdelegua_rt.o`, incluindo o `main()` que chama
 `delegua_rt.c`. Para o objeto padrão:
 
 ```sh
-cc exemplos/9.c libdelegua_rt.o $(pkg-config --cflags --libs bdw-gc) \
+cc exemplos/9.c libdelegua_rt.o $(pkg-config --cflags --libs bdw-gc libcurl) \
   -rdynamic -ldl -lm -o exemplo
 ```
 
@@ -143,3 +143,17 @@ Os testes incluem descritores estáticos e a API de localização legada, valida
 a origem impressa no erro. No checkout do CGD, edite e faça commits usando
 `git -C vendor/delegua-runtime`; publique o commit do runtime antes de atualizar
 a referência registrada pelo compilador.
+
+## Rede gerenciada do CGD
+
+`src/rede.c` implementa sessões libcurl opacas e primitivas `cgdCurl*`. Nenhum
+ponteiro, callback C arbitrário ou FILE\* é exposto. Callbacks internos possuem
+corpo/headers/upload em buffers gerenciados; limites e tamanho do corpo copiado
+são validados. Upload nunca consome stdin. Opções disponíveis são descobertas da
+libcurl carregada; getinfo gerenciável é gerado dos headers por Python no build.
+A API oferece easy/multi, URL, multipart em memória e streams gerenciados.
+WebSocket depende da libcurl disponível e não foi validado no ambiente atual.
+
+Métodos de classe estáticos são registrados por
+`delegua_classe_metodo_estatico`; não recebem receptor e mantêm regras de acesso
+e herança. A API anterior de métodos de instância permanece compatível.

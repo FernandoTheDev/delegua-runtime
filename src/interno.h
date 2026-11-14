@@ -31,4 +31,5 @@ delegua_value rt_clonar(delegua_value v, rt_clone_entry **memo, unsigned depth);
 delegua_value rt_clonar_objeto(delegua_value v, rt_clone_entry **memo, unsigned depth);
 void rt_clone_record(rt_clone_entry **memo, void *original, delegua_value copy);
 void delegua_imprimir_local(FILE *stream);
+delegua_value delegua_cgd_builtin(const char *name);
 #endif

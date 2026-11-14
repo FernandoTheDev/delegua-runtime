@@ -1,7 +1,7 @@
 #include "interno.h"
 typedef struct classe {
-    delegua_value nome, metodos, campos, acessos, getters, setters, accessor_modes, decoradores,
-        decoradores_campos, tipos_campos;
+    delegua_value nome, metodos, estaticos, campos, acessos, getters, setters, accessor_modes,
+        decoradores, decoradores_campos, tipos_campos;
     bool fechada;
     struct classe *super;
 } classe;
@@ -24,6 +24,7 @@ delegua_value create_classe(const char *nome, delegua_value super) {
     classe *c = rt_alloc(1, sizeof(*c));
     c->nome = create_text(nome);
     c->metodos = create_map();
+    c->estaticos = create_map();
     c->campos = create_map();
     c->acessos = create_map();
     c->getters = create_map();
@@ -62,6 +63,12 @@ delegua_value delegua_objeto_obter(delegua_value v, const char *nome) {
     delegua_value key = create_text(nome);
     if (delegua_map_contem(o->campos, key))
         return delegua_map_obter(o->campos, key);
+    for (classe *current = o->tipo; current; current = current->super) {
+        if (delegua_map_contem(current->metodos, key))
+            break;
+        if (delegua_map_contem(current->estaticos, key))
+            return delegua_map_obter(current->estaticos, key);
+    }
     delegua_value f = metodo(o->tipo, key);
     if (f.type == DELEGUA_T_NULO)
         delegua_panicf("Propriedade desconhecida: %s", nome);
@@ -144,7 +151,8 @@ static bool derivada(classe *c, classe *base) {
 }
 static classe *dona(classe *c, delegua_value key) {
     for (; c; c = c->super)
-        if (delegua_map_contem(c->campos, key) || delegua_map_contem(c->metodos, key))
+        if (delegua_map_contem(c->campos, key) || delegua_map_contem(c->metodos, key) ||
+            delegua_map_contem(c->estaticos, key))
             return c;
     return NULL;
 }
@@ -173,6 +181,15 @@ void delegua_classe_metodo_acesso(delegua_value v, const char *name, delegua_val
     delegua_classe_metodo(v, name, fn);
     classe *c = v.value.ptr;
     delegua_map_setar(c->acessos, create_text(name), create_num(visibility));
+}
+void delegua_classe_metodo_estatico(delegua_value v, const char *name, delegua_value fn,
+                                    int visibility) {
+    CHECK_ARG_TYPE(v.type, DELEGUA_T_CLASSE, 1);
+    CHECK_ARG_TYPE(fn.type, DELEGUA_T_FUNCAO, 3);
+    classe *c = v.value.ptr;
+    delegua_value key = create_text(name);
+    delegua_map_setar(c->estaticos, key, fn);
+    delegua_map_setar(c->acessos, key, create_num(visibility));
 }
 bool delegua_tipo_compativel(delegua_value v, const char *type) {
     if (!strcmp(type, "qualquer") || !strcmp(type, "Objeto"))
@@ -258,6 +275,16 @@ delegua_value delegua_assegurar_tipo(delegua_value v, const char *type) {
     return v;
 }
 delegua_value delegua_propriedade_em(delegua_value v, const char *name, delegua_value caller) {
+    if (v.type == DELEGUA_T_CLASSE) {
+        delegua_value key = create_text(name);
+        classe *owner = dona(v.value.ptr, key);
+        if (owner) {
+            acesso(owner, key, caller);
+            if (delegua_map_contem(owner->estaticos, key))
+                return delegua_map_obter(owner->estaticos, key);
+            delegua_panic("Membro de instância exige um objeto.");
+        }
+    }
     if (v.type != DELEGUA_T_OBJETO)
         return delegua_propriedade(v, name);
     objeto *o = v.value.ptr;

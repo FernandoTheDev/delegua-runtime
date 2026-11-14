@@ -29,6 +29,7 @@ const char *delegua_type_strings[DELEGUA_T_COUNT] = {
     [DELEGUA_T_CLASSE] = "classe",  [DELEGUA_T_OBJETO] = "objeto",
     [DELEGUA_T_FUNCAO] = "função",  [DELEGUA_T_BIBLIOTECA] = "biblioteca",
     [DELEGUA_T_MODULO] = "módulo",  [DELEGUA_T_PTR] = "ponteiro",
+    [DELEGUA_T_REDE] = "rede",
 };
 
 const char *delegua_type_name(delegua_type t) {

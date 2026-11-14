@@ -508,6 +508,9 @@ static const nativa metodos[] = {{"adicionar", adicionar, 1, 1},
                                  {"éInstânciaDe", instancia, 1, 1},
                                  {"respondeA", responde, 1, 1}};
 delegua_value delegua_builtin(const char *name) {
+    delegua_value cgd = delegua_cgd_builtin(name);
+    if (cgd.type != DELEGUA_T_NULO)
+        return cgd;
     if (!strcmp(name, "Excecao"))
         return delegua_classe_excecao();
     if (!strcmp(name, "Objeto"))

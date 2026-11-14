@@ -100,6 +100,7 @@ enum delegua_type {
     DELEGUA_T_FUNCAO,
     DELEGUA_T_BIBLIOTECA,
     DELEGUA_T_MODULO,
+    DELEGUA_T_REDE,
     DELEGUA_T_COUNT,
 };
 
@@ -359,6 +360,8 @@ delegua_value delegua_propriedade(delegua_value receiver, const char *name);
 
 void delegua_classe_fechada(delegua_value c);
 void delegua_classe_campo(delegua_value c, const char *nome, const char *tipo, int acesso);
+void delegua_classe_metodo_estatico(delegua_value c, const char *nome, delegua_value fn,
+                                    int acesso);
 void delegua_classe_metodo_acesso(delegua_value c, const char *nome, delegua_value fn, int acesso);
 delegua_value delegua_propriedade_em(delegua_value v, const char *nome, delegua_value caller);
 delegua_value delegua_definir_em(delegua_value v, const char *nome, delegua_value valor,

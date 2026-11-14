@@ -37,8 +37,13 @@ while [ "$#" -gt 0 ]; do
     shift
 done
 
-CFLAGS="-std=c99 -Wall -Wextra -Werror -pedantic -Wconversion -Wshadow -fPIC -g ${CFLAGS:-} $(pkg-config --cflags bdw-gc)"
+CFLAGS="-std=c99 -Wall -Wextra -Werror -pedantic -Wconversion -Wshadow -fPIC -g ${CFLAGS:-} $(pkg-config --cflags bdw-gc libcurl)"
 mkdir -p .build
+if ! pkg-config --atleast-version=7.86.0 libcurl; then
+    echo "libcurl >= 7.86.0 é necessária." >&2
+    exit 1
+fi
+python3 tools/gerar_curl_infos.py
 for SRC in src/*.c; do
     NAME=$(basename "$SRC" .c)
     case "$TARGET" in
