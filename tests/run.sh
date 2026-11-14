@@ -6,7 +6,7 @@ CC=${CC:-clang}
 # CFLAGS permite executar a mesma suíte com sanitizadores e NDEBUG.
 "$CC" -std=c99 -Wall -Wextra -Werror ${CFLAGS:-} tests/runtime.c libdelegua_rt.o $(pkg-config --cflags --libs bdw-gc) -rdynamic -ldl -lm -o .build/test-runtime
 .build/test-runtime
-for mode in index overflow sub mul div cast parse shift slice tuple null allocation key arity ffi closed; do
+for mode in power intdiv membership tuple-conversion random-range index overflow sub mul div cast parse shift slice tuple null allocation key arity ffi closed; do
     set +e
     .build/test-runtime "$mode" > .build/error.log 2>&1
     status=$?
