@@ -8,11 +8,5 @@ void delegua_main(void) {
     delegua_vetor_adicionar(&vetor2, create_num(42));
     delegua_value vetor3 = create_vetor();
     delegua_vetor_adicionar(&vetor3, create_num(69));
-    delegua_escreva(5,
-        vetor1, 
-        create_text(" "), 
-        vetor2,
-        create_text(" "), 
-        vetor3
-    );
+    delegua_escreva(5, vetor1, create_text(" "), vetor2, create_text(" "), vetor3);
 }

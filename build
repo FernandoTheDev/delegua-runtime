@@ -26,10 +26,13 @@ fi
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        -ll) TARGET="ll" ;;
-        -s)  TARGET="s"  ;;
-        -o)  TARGET="o"  ;;
-        *) echo "Flag desconhecida: $1. Use -ll, -s ou -o" >&2; exit 1 ;;
+    -ll) TARGET="ll" ;;
+    -s) TARGET="s" ;;
+    -o) TARGET="o" ;;
+    *)
+        echo "Flag desconhecida: $1. Use -ll, -s ou -o" >&2
+        exit 1
+        ;;
     esac
     shift
 done
@@ -39,9 +42,9 @@ mkdir -p .build
 for SRC in src/*.c; do
     NAME=$(basename "$SRC" .c)
     case "$TARGET" in
-        o) "$CC" $CFLAGS -c "$SRC" -o ".build/$NAME.o" ;;
-        ll) "$CC" $CFLAGS -S -emit-llvm "$SRC" -o ".build/$NAME.ll" ;;
-        s) "$CC" $CFLAGS -S "$SRC" -o ".build/$NAME.s" ;;
+    o) "$CC" $CFLAGS -c "$SRC" -o ".build/$NAME.o" ;;
+    ll) "$CC" $CFLAGS -S -emit-llvm "$SRC" -o ".build/$NAME.ll" ;;
+    s) "$CC" $CFLAGS -S "$SRC" -o ".build/$NAME.s" ;;
     esac
 done
 if [ "$TARGET" = o ]; then

@@ -18,8 +18,7 @@
 #include "delegua_rt.h"
 
 // ponto de entrada
-int main(int argc, char *argv[])
-{
+int main(int argc, char *argv[]) {
     GC_INIT();
     program_create(&context, argc, argv);
     delegua_main();

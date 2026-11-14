@@ -37,18 +37,18 @@ e executa os programas gerados, incluindo todos os exemplos.
 
 ## Organização
 
-| Módulo | Responsabilidade |
-| --- | --- |
-| `valores.c` | Nomes de tipos, conversões e posição de erro |
-| `operadores.c`, `adicionais.c` | Aritmética, bits, comparação, potência e pertencimento |
-| `colecoes.c` | Vetores, tuplas, mapas, índices, fatias, expansão e clonagem |
-| `objetos.c` | Classes, herança, visibilidade, acessores, funções e descritores de tipos |
-| `excecoes.c` | Frames de tratamento, Excecao, falhar e erro do runtime |
-| `biblioteca.c`, `nativas.c` | Funções globais, métodos nativos, entrada e conversão para texto |
-| `textos.c`, `unicode_tables.h` | UTF-8 e transformações Unicode sem locale global |
-| `modulos.c` | Tabela protegida de exportações de módulos compilados |
-| `saida.c` | Saída dos valores |
-| `ffi.c` | API C para bibliotecas nativas confiáveis, não exposta pelo CGD |
+| Módulo                         | Responsabilidade                                                          |
+| ------------------------------ | ------------------------------------------------------------------------- |
+| `valores.c`                    | Nomes de tipos, conversões e posição de erro                              |
+| `operadores.c`, `adicionais.c` | Aritmética, bits, comparação, potência e pertencimento                    |
+| `colecoes.c`                   | Vetores, tuplas, mapas, índices, fatias, expansão e clonagem              |
+| `objetos.c`                    | Classes, herança, visibilidade, acessores, funções e descritores de tipos |
+| `excecoes.c`                   | Frames de tratamento, Excecao, falhar e erro do runtime                   |
+| `biblioteca.c`, `nativas.c`    | Funções globais, métodos nativos, entrada e conversão para texto          |
+| `textos.c`, `unicode_tables.h` | UTF-8 e transformações Unicode sem locale global                          |
+| `modulos.c`                    | Tabela protegida de exportações de módulos compilados                     |
+| `saida.c`                      | Saída dos valores                                                         |
+| `ffi.c`                        | API C para bibliotecas nativas confiáveis, não exposta pelo CGD           |
 
 ## Valores e coleções
 
