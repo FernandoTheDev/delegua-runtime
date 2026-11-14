@@ -112,6 +112,14 @@ typedef struct delegua_vetor_data delegua_vetor_data;
 
 extern const char *delegua_type_strings[DELEGUA_T_COUNT];
 const char *delegua_type_name(delegua_type type);
+/* Metadados estáticos emitidos pelo compilador: caminho quente faz apenas uma
+ * escrita de ponteiro nas operações falíveis. A formatação ocorre no erro. */
+typedef struct delegua_local {
+    const char *arquivo;
+    unsigned linha, coluna;
+} delegua_local;
+#define DELEGUA_ERRO_GENERICO "R0001"
+extern const delegua_local *delegua_local_atual;
 extern const char *delegua_arquivo_atual;
 extern unsigned delegua_linha_atual, delegua_coluna_atual;
 void delegua_localizar(const char *arquivo, unsigned linha, unsigned coluna);

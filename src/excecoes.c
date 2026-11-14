@@ -45,10 +45,8 @@ void delegua_falhar(delegua_value value) {
         longjmp(active->env, 1);
     }
     delegua_value message = delegua_objeto_obter(value, "mensagem");
-    if (delegua_arquivo_atual)
-        fprintf(stderr, "%s:%u:%u: ", delegua_arquivo_atual, delegua_linha_atual,
-                delegua_coluna_atual);
-    fprintf(stderr, "Erro interno do runtime delegua: %.*s\n",
+    delegua_imprimir_local(stderr);
+    fprintf(stderr, "Erro [" DELEGUA_ERRO_GENERICO "] do runtime delegua: %.*s\n",
             (int)(message.value.text.len > INT_MAX ? INT_MAX : message.value.text.len),
             message.value.text.ptr);
     exit(1);
@@ -61,9 +59,7 @@ void delegua_erro(const char *message) {
         reporting = false;
         delegua_falhar(exception);
     }
-    if (delegua_arquivo_atual)
-        fprintf(stderr, "%s:%u:%u: ", delegua_arquivo_atual, delegua_linha_atual,
-                delegua_coluna_atual);
-    fprintf(stderr, "Erro interno do runtime delegua: %s\n", message);
+    delegua_imprimir_local(stderr);
+    fprintf(stderr, "Erro [" DELEGUA_ERRO_GENERICO "] do runtime delegua: %s\n", message);
     exit(1);
 }

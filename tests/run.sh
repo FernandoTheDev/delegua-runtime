@@ -6,15 +6,24 @@ CC=${CC:-clang}
 # CFLAGS permite executar a mesma suíte com sanitizadores e NDEBUG.
 "$CC" -std=c99 -Wall -Wextra -Werror ${CFLAGS:-} tests/runtime.c libdelegua_rt.o $(pkg-config --cflags --libs bdw-gc) -rdynamic -ldl -lm -o .build/test-runtime
 .build/test-runtime
-for mode in power intdiv membership tuple-conversion random-range index overflow sub mul div cast parse shift slice tuple null allocation key arity ffi closed; do
+for mode in source-site legacy-source power intdiv membership tuple-conversion random-range index overflow sub mul div cast parse shift slice tuple null allocation key arity ffi closed; do
 	set +e
 	.build/test-runtime "$mode" >.build/error.log 2>&1
 	status=$?
 	set -e
-	if [ "$status" -ne 1 ] || ! grep -q 'Erro interno' .build/error.log; then
+	if [ "$status" -ne 1 ] || ! grep -q 'R0001' .build/error.log; then
 		echo "Falha no caminho de erro: $mode (status $status)" >&2
 		cat .build/error.log
 		exit 1
 	fi
 done
 echo 'Caminhos de erro OK'
+
+for spec in 'source-site origem.delegua:17:9:' 'legacy-source legado.delegua:8:2:'; do
+	set -- $spec
+	set +e
+	.build/test-runtime "$1" >.build/error.log 2>&1
+	status=$?
+	set -e
+	[ "$status" -eq 1 ] && grep -q "$2" .build/error.log
+done

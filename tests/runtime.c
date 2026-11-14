@@ -20,7 +20,15 @@ void delegua_main(void) {
         const char *mode = context->argv[1];
         delegua_value v = create_vetor();
         delegua_vetor_adicionar(&v, create_num(1));
-        if (!strcmp(mode, "power"))
+        if (!strcmp(mode, "source-site")) {
+            static const delegua_local site = {"origem.delegua", 17, 9};
+            delegua_local_atual = &site;
+            delegua_op_div(create_num(1), create_num(0));
+        } else if (!strcmp(mode, "legacy-source")) {
+            delegua_localizar("legado.delegua", 8, 2);
+            REQUIRE(delegua_local_atual == NULL);
+            delegua_op_div(create_num(1), create_num(0));
+        } else if (!strcmp(mode, "power"))
             delegua_op_pow(create_num(2), create_num(63));
         else if (!strcmp(mode, "intdiv"))
             delegua_op_idiv(create_num(1), create_num(0));

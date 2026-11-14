@@ -124,3 +124,22 @@ python3 tools/gerar_unicode.py
 ```
 
 Python não é necessário para compilar ou usar as tabelas já versionadas.
+
+## Localização e código de falha
+
+O compilador pode emitir uma tabela `static const delegua_local` e atribuir
+`delegua_local_atual` somente nos pontos falíveis. Isso evita chamar uma função
+de debug por expressão ou por linha. O caminho de erro lê esse descritor e só
+então formata/imprime a localização. Há uma escrita de ponteiro nos pontos
+instrumentados; não se trata de rastreamento gratuito ou de uma pilha de chamadas.
+
+`delegua_localizar(arquivo, linha, coluna)` permanece compatível com consumidores
+C anteriores e desativa o descritor atual para usar os campos legados. Falhas
+nativas não tratadas incluem o código genérico `R0001`, definido por
+`DELEGUA_ERRO_GENERICO`. Ainda não há um código específico para cada mensagem
+nativa nem isolamento de contexto por thread.
+
+Os testes incluem descritores estáticos e a API de localização legada, validando
+a origem impressa no erro. No checkout do CGD, edite e faça commits usando
+`git -C vendor/delegua-runtime`; publique o commit do runtime antes de atualizar
+a referência registrada pelo compilador.

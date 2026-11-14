@@ -57,10 +57,21 @@ f64 rt_parse_real(delegua_value v) {
     return n;
 }
 
+const delegua_local *delegua_local_atual = NULL;
 const char *delegua_arquivo_atual = NULL;
 unsigned delegua_linha_atual = 0, delegua_coluna_atual = 0;
 void delegua_localizar(const char *arquivo, unsigned linha, unsigned coluna) {
+    delegua_local_atual = NULL; /* Compatibilidade da API nativa anterior. */
     delegua_arquivo_atual = arquivo;
     delegua_linha_atual = linha;
     delegua_coluna_atual = coluna;
+}
+
+void delegua_imprimir_local(FILE *stream) {
+    const char *arquivo =
+        delegua_local_atual ? delegua_local_atual->arquivo : delegua_arquivo_atual;
+    unsigned linha = delegua_local_atual ? delegua_local_atual->linha : delegua_linha_atual;
+    unsigned coluna = delegua_local_atual ? delegua_local_atual->coluna : delegua_coluna_atual;
+    if (arquivo)
+        fprintf(stream, "%s:%u:%u: ", arquivo, linha, coluna);
 }
