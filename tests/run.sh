@@ -19,7 +19,7 @@ for mode in source-site legacy-source power intdiv membership tuple-conversion r
 done
 echo 'Caminhos de erro OK'
 
-for spec in 'source-site origem.delegua:17:9:' 'legacy-source legado.delegua:8:2:'; do
+for spec in 'source-site origem.delegua:17:9' 'legacy-source legado.delegua:8:2'; do
 	set -- $spec
 	set +e
 	.build/test-runtime "$1" >.build/error.log 2>&1

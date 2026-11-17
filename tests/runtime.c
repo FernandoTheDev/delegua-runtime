@@ -15,6 +15,46 @@ static delegua_value obter(sz argc, delegua_value *argv) {
     REQUIRE(argc == 1);
     return delegua_objeto_obter(argv[0], "valor");
 }
+static unsigned destructor_order;
+static delegua_value destructor_base(sz argc, delegua_value *argv) {
+    (void)argc;
+    (void)argv;
+    REQUIRE(destructor_order == 1);
+    destructor_order = 2;
+    return create_nulo();
+}
+static delegua_value destructor_child(sz argc, delegua_value *argv) {
+    REQUIRE(argc == 1 && destructor_order == 0);
+    destructor_order = 1;
+    delegua_destruir(argv[0]);
+    delegua_falhar(create_text("destrutor falhou"));
+    return create_nulo();
+}
+static void expansion_contracts(void) {
+    delegua_value map = create_map(), key = create_text("nulo"), alias = map;
+    delegua_map_setar(map, key, create_nulo());
+    REQUIRE(delegua_map_obter_padrao(map, key, create_num(7)).type == DELEGUA_T_NULO);
+    REQUIRE(delegua_map_obter_padrao(map, create_text("ausente"), create_num(7)).value.num == 7);
+    delegua_value entries = delegua_map_itens(map);
+    delegua_map_limpar(map);
+    REQUIRE(delegua_tamanho(alias) == 0 && delegua_tamanho(entries) == 1);
+    REQUIRE(entries.value.vetor->values[0].type == DELEGUA_T_TUPLA);
+
+    delegua_value base = create_classe("BaseRecurso", create_nulo());
+    delegua_value child = create_classe("FilhaRecurso", base);
+    delegua_classe_metodo(base, "destrutor", create_funcao(destructor_base, 0));
+    delegua_classe_metodo(child, "destrutor", create_funcao(destructor_child, 0));
+    delegua_value object = delegua_instanciar(child, 0, NULL);
+    delegua_try_frame *frame = delegua_tentar();
+    if (setjmp(frame->env) == 0) {
+        delegua_destruir(object);
+        REQUIRE(false);
+    }
+    REQUIRE(destructor_order == 2);
+    delegua_sair_tente(frame);
+    delegua_destruir(object);
+    REQUIRE(destructor_order == 2);
+}
 void delegua_main(void) {
     if (context->argc > 1) {
         const char *mode = context->argv[1];
@@ -158,5 +198,6 @@ void delegua_main(void) {
         i64 bounded = delegua_aleatorio_entre(create_num(-3), create_num(4)).value.num;
         REQUIRE(bounded >= -3 && bounded < 4);
     }
+    expansion_contracts();
     puts("Testes OK");
 }

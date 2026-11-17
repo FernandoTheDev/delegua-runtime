@@ -45,10 +45,7 @@ void delegua_falhar(delegua_value value) {
         longjmp(active->env, 1);
     }
     delegua_value message = delegua_objeto_obter(value, "mensagem");
-    delegua_imprimir_local(stderr);
-    fprintf(stderr, "Erro [" DELEGUA_ERRO_GENERICO "] do runtime delegua: %.*s\n",
-            (int)(message.value.text.len > INT_MAX ? INT_MAX : message.value.text.len),
-            message.value.text.ptr);
+    delegua_renderizar_erro(stderr, message.value.text.ptr, message.value.text.len);
     exit(1);
 }
 void delegua_erro(const char *message) {
@@ -59,7 +56,6 @@ void delegua_erro(const char *message) {
         reporting = false;
         delegua_falhar(exception);
     }
-    delegua_imprimir_local(stderr);
-    fprintf(stderr, "Erro [" DELEGUA_ERRO_GENERICO "] do runtime delegua: %s\n", message);
+    delegua_renderizar_erro(stderr, message, strlen(message));
     exit(1);
 }

@@ -329,12 +329,18 @@ delegua_value create_tupla(sz count, const delegua_value *values);
 delegua_value create_map(void);
 delegua_value delegua_map_setar(delegua_value map, delegua_value key, delegua_value value);
 delegua_value delegua_map_obter(delegua_value map, delegua_value key);
+delegua_value delegua_map_obter_padrao(delegua_value map, delegua_value key,
+                                       delegua_value fallback);
+void delegua_map_congelar(delegua_value value);
+delegua_value delegua_map_itens(delegua_value map);
+delegua_value delegua_map_limpar(delegua_value map);
 bool delegua_map_contem(delegua_value map, delegua_value key);
 bool delegua_map_remover(delegua_value map, delegua_value key);
 sz delegua_tamanho(delegua_value value);
 delegua_value create_funcao(delegua_native_fn fn, sz aridade);
 delegua_value create_classe(const char *nome, delegua_value superclasse);
 void delegua_classe_metodo(delegua_value classe, const char *nome, delegua_value funcao);
+delegua_value delegua_destruir(delegua_value objeto);
 delegua_value delegua_instanciar(delegua_value classe, sz argc, delegua_value *argv);
 delegua_value delegua_objeto_obter(delegua_value objeto, const char *nome);
 delegua_value delegua_objeto_setar(delegua_value objeto, const char *nome, delegua_value value);
@@ -358,8 +364,13 @@ delegua_value delegua_ligar(delegua_value fn, delegua_value receiver);
 delegua_value delegua_builtin(const char *name);
 delegua_value delegua_propriedade(delegua_value receiver, const char *name);
 
+void delegua_classe_inicializador(delegua_value value, const char *name, delegua_value function);
+void delegua_classe_abstrata(delegua_value value);
+void delegua_classe_interface(delegua_value value, delegua_value contract);
 void delegua_classe_fechada(delegua_value c);
 void delegua_classe_campo(delegua_value c, const char *nome, const char *tipo, int acesso);
+void delegua_classe_enum(delegua_value klass, const char *name, delegua_value members,
+                         int visibility);
 void delegua_classe_metodo_estatico(delegua_value c, const char *nome, delegua_value fn,
                                     int acesso);
 void delegua_classe_metodo_acesso(delegua_value c, const char *nome, delegua_value fn, int acesso);

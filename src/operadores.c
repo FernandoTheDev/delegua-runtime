@@ -225,7 +225,19 @@ delegua_value delegua_op_neq(delegua_value l, delegua_value r) {
     return create_bool(!eq.value.b1);
 }
 
+static int comparar_textos(delegua_value left, delegua_value right) {
+    sz common =
+        left.value.text.len < right.value.text.len ? left.value.text.len : right.value.text.len;
+    int comparison = memcmp(left.value.text.ptr, right.value.text.ptr, common);
+    if (comparison)
+        return comparison;
+    return left.value.text.len < right.value.text.len   ? -1
+           : left.value.text.len > right.value.text.len ? 1
+                                                        : 0;
+}
 delegua_value delegua_op_gt(delegua_value l, delegua_value r) {
+    if (l.type == DELEGUA_T_TEXT && r.type == DELEGUA_T_TEXT)
+        return create_bool(comparar_textos(l, r) > 0);
     CHECK_CAST(l, r);
     switch (l.type) {
     case DELEGUA_T_NUM:
@@ -241,6 +253,8 @@ delegua_value delegua_op_gt(delegua_value l, delegua_value r) {
 }
 
 delegua_value delegua_op_ge(delegua_value l, delegua_value r) {
+    if (l.type == DELEGUA_T_TEXT && r.type == DELEGUA_T_TEXT)
+        return create_bool(comparar_textos(l, r) >= 0);
     CHECK_CAST(l, r);
     switch (l.type) {
     case DELEGUA_T_NUM:
@@ -256,6 +270,8 @@ delegua_value delegua_op_ge(delegua_value l, delegua_value r) {
 }
 
 delegua_value delegua_op_lt(delegua_value l, delegua_value r) {
+    if (l.type == DELEGUA_T_TEXT && r.type == DELEGUA_T_TEXT)
+        return create_bool(comparar_textos(l, r) < 0);
     CHECK_CAST(l, r);
     switch (l.type) {
     case DELEGUA_T_NUM:
@@ -271,6 +287,8 @@ delegua_value delegua_op_lt(delegua_value l, delegua_value r) {
 }
 
 delegua_value delegua_op_le(delegua_value l, delegua_value r) {
+    if (l.type == DELEGUA_T_TEXT && r.type == DELEGUA_T_TEXT)
+        return create_bool(comparar_textos(l, r) <= 0);
     CHECK_CAST(l, r);
     switch (l.type) {
     case DELEGUA_T_NUM:

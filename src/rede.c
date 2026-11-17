@@ -760,7 +760,7 @@ static delegua_value multipart(sz argc, delegua_value *argv) {
     h->mime = mime;
     return argv[0];
 }
-delegua_value delegua_cgd_builtin(const char *name) {
+delegua_value rt_rede_builtin(const char *name) {
     struct entry {
         const char *name;
         delegua_native_fn fn;

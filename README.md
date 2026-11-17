@@ -157,3 +157,35 @@ WebSocket depende da libcurl disponível e não foi validado no ambiente atual.
 Métodos de classe estáticos são registrados por
 `delegua_classe_metodo_estatico`; não recebem receptor e mantêm regras de acesso
 e herança. A API anterior de métodos de instância permanece compatível.
+
+### Expansão de 16/11/2026
+
+A API anterior permanece disponível. `delegua_map_obter_padrao` distingue uma
+chave ausente de um valor nulo em uma única busca. `delegua_map_itens` cria um
+snapshot raso de tuplas chave/valor percorrendo os buckets uma vez;
+`delegua_map_limpar` preserva a identidade e esvazia a coleção. Os métodos
+obter/definir/contemChave/itens/limpar são registrados na biblioteca nativa.
+
+`delegua_destruir` aciona destrutores de instância da derivada às bases uma vez
+por identidade. Reentrada é ignorada; todas as bases são chamadas e a primeira
+exceção é relançada. Não há callback Delégua registrado no Boehm GC. Consumidores
+devem solicitar destruição explicitamente, de preferência em finalmente.
+
+`arquivos.c` oferece primitivas de leitura/escrita/consulta/remoção por caminho,
+sem expor FILE\* ou fd. O descritor é fechado antes de retornar ou lançar; caminhos
+com byte nulo e I/O em arquivos não regulares são rejeitados. Limite de 64 MiB
+por leitura/escrita. Escrita não promete atomicidade. Implementação POSIX/Linux.
+`registro.c` separa o despacho dessas primitivas do módulo de rede.
+
+Os testes foram autorizados em 17/11/2026. Resultados efetivamente executados
+ficam em docs/CONTINUIDADE.md do CGD; a API C anterior permanece coberta.
+
+### Diagnósticos visuais
+
+Erros não capturados usam `error[R0001]`, localização, fonte e marcador de coluna,
+com tabs expandidas e controles escapados. O renderer vive em `diagnosticos.c` e
+não aloca valores gerenciados. O arquivo é consultado somente na falha, com
+orçamento e abertura não bloqueante de arquivos regulares; ausência do fonte
+preserva localização e mensagem. A API `delegua_localizar` anterior permanece
+compatível. Tratadores não imprimem automaticamente; descritores estáticos não
+fazem I/O/formatação no caminho normal.

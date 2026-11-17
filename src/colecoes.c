@@ -81,6 +81,7 @@ typedef struct entry {
 } entry;
 typedef struct {
     sz size, cap;
+    bool readonly;
     entry **buckets;
 } hashmap;
 static hashmap *mapa(delegua_value v) {
@@ -140,6 +141,8 @@ static entry **buscar(hashmap *m, delegua_value key, u64 h) {
 }
 delegua_value delegua_map_setar(delegua_value v, delegua_value key, delegua_value value) {
     hashmap *m = mapa(v);
+    if (m->readonly)
+        delegua_panic("Enum/dicionário constante não permite modificação.");
     u64 h = hash(key);
     entry **p = buscar(m, key, h);
     if (*p) {
@@ -171,11 +174,35 @@ delegua_value delegua_map_obter(delegua_value v, delegua_value key) {
     entry *e = *buscar(mapa(v), key, hash(key));
     return e ? e->value : create_nulo();
 }
+delegua_value delegua_map_obter_padrao(delegua_value v, delegua_value key, delegua_value fallback) {
+    entry *e = *buscar(mapa(v), key, hash(key));
+    return e ? e->value : fallback;
+}
+delegua_value delegua_map_itens(delegua_value v) {
+    hashmap *m = mapa(v);
+    delegua_value out = create_vetor();
+    for (sz i = 0; i < m->cap; ++i)
+        for (entry *e = m->buckets[i]; e; e = e->next) {
+            delegua_value pair[] = {e->key, e->value};
+            delegua_vetor_adicionar(&out, create_tupla(2, pair));
+        }
+    return out;
+}
+delegua_value delegua_map_limpar(delegua_value v) {
+    hashmap *m = mapa(v);
+    if (m->readonly)
+        delegua_panic("Enum/dicionário constante não permite modificação.");
+    memset(m->buckets, 0, m->cap * sizeof(*m->buckets));
+    m->size = 0;
+    return v;
+}
 bool delegua_map_contem(delegua_value v, delegua_value key) {
     return *buscar(mapa(v), key, hash(key)) != NULL;
 }
 bool delegua_map_remover(delegua_value v, delegua_value key) {
     hashmap *m = mapa(v);
+    if (m->readonly)
+        delegua_panic("Enum/dicionário constante não permite modificação.");
     entry **p = buscar(m, key, hash(key));
     if (!*p)
         return false;
@@ -371,3 +398,5 @@ void delegua_map_expandir(delegua_value target, delegua_value source) {
         for (entry *e = m->buckets[b]; e; e = e->next)
             delegua_map_setar(target, e->key, e->value);
 }
+
+void delegua_map_congelar(delegua_value value) { mapa(value)->readonly = true; }

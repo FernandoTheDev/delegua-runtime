@@ -2,12 +2,15 @@
 typedef struct classe {
     delegua_value nome, metodos, estaticos, campos, acessos, getters, setters, accessor_modes,
         decoradores, decoradores_campos, tipos_campos;
-    bool fechada;
+    delegua_value inicializadores;
+    bool fechada, abstrata;
+    delegua_value interfaces;
     struct classe *super;
 } classe;
 typedef struct {
     classe *tipo;
     delegua_value campos;
+    unsigned destruicao;
 } objeto;
 typedef struct {
     delegua_native_fn fn;
@@ -25,6 +28,8 @@ delegua_value create_classe(const char *nome, delegua_value super) {
     c->nome = create_text(nome);
     c->metodos = create_map();
     c->estaticos = create_map();
+    c->interfaces = create_vetor();
+    c->inicializadores = create_vetor();
     c->campos = create_map();
     c->acessos = create_map();
     c->getters = create_map();
@@ -107,11 +112,28 @@ delegua_value delegua_chamar(delegua_value v, sz argc, delegua_value *argv) {
     delegua_call_depth--;
     return result;
 }
+void delegua_classe_inicializador(delegua_value value, const char *name, delegua_value function) {
+    CHECK_ARG_TYPE(value.type, DELEGUA_T_CLASSE, 1);
+    CHECK_ARG_TYPE(function.type, DELEGUA_T_FUNCAO, 3);
+    delegua_value entry[] = {create_text(name), function};
+    delegua_vetor_adicionar(&((classe *)value.value.ptr)->inicializadores, create_tupla(2, entry));
+}
+static void inicializar_campos(classe *type, delegua_value self) {
+    if (type->super)
+        inicializar_campos(type->super, self);
+    for (sz index = 0; index < type->inicializadores.value.vetor->size; ++index) {
+        delegua_value pair = type->inicializadores.value.vetor->values[index];
+        delegua_value value = delegua_chamar(ligar(pair.value.vetor->values[1], self), 0, NULL);
+        delegua_objeto_setar(self, pair.value.vetor->values[0].value.text.ptr, value);
+    }
+}
 delegua_value delegua_instanciar(delegua_value v, sz argc, delegua_value *argv) {
     CHECK_ARG_TYPE(v.type, DELEGUA_T_CLASSE, 1);
     CHECK_NULL(v.value.ptr);
     objeto *o = rt_alloc(1, sizeof(*o));
     o->tipo = v.value.ptr;
+    if (o->tipo->abstrata)
+        delegua_panic("Classe abstrata/interface não pode ser instanciada.");
     o->campos = create_map();
     for (classe *c = o->tipo; c; c = c->super) {
         sz n = delegua_tamanho(c->campos);
@@ -121,12 +143,55 @@ delegua_value delegua_instanciar(delegua_value v, sz argc, delegua_value *argv) 
         }
     }
     delegua_value out = {.type = DELEGUA_T_OBJETO, .value.ptr = o};
+    inicializar_campos(o->tipo, out);
     delegua_value init = metodo(o->tipo, create_text("construtor"));
     if (init.type != DELEGUA_T_NULO)
         delegua_chamar(ligar(init, out), argc, argv);
     else if (argc)
         delegua_panic("Classe sem construtor não recebe argumentos.");
     return out;
+}
+
+/* Código Delégua nunca é chamado pelo GC. A destruição é explícita e idempotente
+ * por identidade, inclusive quando um destrutor lança ou tenta reentrar. */
+static delegua_value destruir_classe(classe *c, delegua_value self) {
+    delegua_value key = create_text("destrutor");
+    if (!delegua_map_contem(c->metodos, key))
+        return create_nulo();
+    delegua_value fn = delegua_map_obter(c->metodos, key);
+    delegua_try_frame *frame = delegua_tentar();
+    if (setjmp(frame->env) == 0) {
+        delegua_chamar(ligar(fn, self), 0, NULL);
+        delegua_sair_tente(frame);
+        return create_nulo();
+    }
+    delegua_value error = frame->error;
+    delegua_sair_tente(frame);
+    return error;
+}
+
+delegua_value delegua_destruir(delegua_value self) {
+    CHECK_ARG_TYPE(self.type, DELEGUA_T_OBJETO, 1);
+    CHECK_NULL(self.value.ptr);
+    objeto *o = self.value.ptr;
+    if (o->destruicao)
+        return create_nulo();
+    o->destruicao = 1;
+    delegua_value first = create_nulo();
+    const delegua_local *site = NULL;
+    for (classe *c = o->tipo; c; c = c->super) {
+        delegua_value error = destruir_classe(c, self);
+        if (first.type == DELEGUA_T_NULO && error.type != DELEGUA_T_NULO) {
+            first = error;
+            site = delegua_local_atual;
+        }
+    }
+    o->destruicao = 2;
+    if (first.type != DELEGUA_T_NULO) {
+        delegua_local_atual = site;
+        delegua_falhar(first);
+    }
+    return create_nulo();
 }
 
 delegua_value create_funcao_intervalo(delegua_native_fn fn, sz minimo, sz maximo) {
@@ -143,10 +208,23 @@ delegua_value delegua_ligar(delegua_value fn, delegua_value receiver) {
     return ligar(fn, receiver);
 }
 
+void delegua_classe_abstrata(delegua_value value) {
+    CHECK_ARG_TYPE(value.type, DELEGUA_T_CLASSE, 1);
+    ((classe *)value.value.ptr)->abstrata = true;
+}
+void delegua_classe_interface(delegua_value value, delegua_value contract) {
+    CHECK_ARG_TYPE(value.type, DELEGUA_T_CLASSE, 1);
+    CHECK_ARG_TYPE(contract.type, DELEGUA_T_CLASSE, 2);
+    delegua_vetor_adicionar(&((classe *)value.value.ptr)->interfaces, contract);
+}
 static bool derivada(classe *c, classe *base) {
-    for (; c; c = c->super)
+    for (; c; c = c->super) {
         if (c == base)
             return true;
+        for (sz i = 0; i < c->interfaces.value.vetor->size; ++i)
+            if (c->interfaces.value.vetor->values[i].value.ptr == base)
+                return true;
+    }
     return false;
 }
 static classe *dona(classe *c, delegua_value key) {
@@ -181,6 +259,16 @@ void delegua_classe_metodo_acesso(delegua_value v, const char *name, delegua_val
     delegua_classe_metodo(v, name, fn);
     classe *c = v.value.ptr;
     delegua_map_setar(c->acessos, create_text(name), create_num(visibility));
+}
+/* Namespace numérico imutável; não introduz armazenamento estático mutável. */
+void delegua_classe_enum(delegua_value v, const char *name, delegua_value members, int visibility) {
+    CHECK_ARG_TYPE(v.type, DELEGUA_T_CLASSE, 1);
+    CHECK_ARG_TYPE(members.type, DELEGUA_T_MAP, 3);
+    delegua_map_congelar(members);
+    classe *c = v.value.ptr;
+    delegua_value key = create_text(name);
+    delegua_map_setar(c->estaticos, key, members);
+    delegua_map_setar(c->acessos, key, create_num(visibility));
 }
 void delegua_classe_metodo_estatico(delegua_value v, const char *name, delegua_value fn,
                                     int visibility) {
@@ -262,9 +350,15 @@ bool delegua_tipo_compativel(delegua_value v, const char *type) {
                     valid = false;
             }
         } else if (v.type == DELEGUA_T_OBJETO) {
-            for (classe *c = ((objeto *)v.value.ptr)->tipo; c; c = c->super)
+            for (classe *c = ((objeto *)v.value.ptr)->tipo; c; c = c->super) {
                 if (!strcmp(c->nome.value.text.ptr, type))
                     valid = true;
+                for (sz i = 0; i < c->interfaces.value.vetor->size; ++i)
+                    if (!strcmp(((classe *)c->interfaces.value.vetor->values[i].value.ptr)
+                                    ->nome.value.text.ptr,
+                                type))
+                        valid = true;
+            }
         }
     }
     return valid;

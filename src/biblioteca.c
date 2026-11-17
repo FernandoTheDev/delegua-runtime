@@ -18,6 +18,30 @@ static delegua_value falhar(sz argc, delegua_value *argv) {
     delegua_falhar(argv[0]);
     return create_nulo();
 }
+static delegua_value destruir(sz argc, delegua_value *argv) {
+    (void)argc;
+    return delegua_destruir(argv[0]);
+}
+static delegua_value map_obter(sz argc, delegua_value *argv) {
+    CHECK_ARG_TYPE(argv[0].type, DELEGUA_T_MAP, 1);
+    return delegua_map_obter_padrao(argv[0], argv[1], argc > 2 ? argv[2] : create_nulo());
+}
+static delegua_value map_definir(sz argc, delegua_value *argv) {
+    (void)argc;
+    return delegua_map_setar(argv[0], argv[1], argv[2]);
+}
+static delegua_value map_contem(sz argc, delegua_value *argv) {
+    (void)argc;
+    return create_bool(delegua_map_contem(argv[0], argv[1]));
+}
+static delegua_value map_itens(sz argc, delegua_value *argv) {
+    UNUSED();
+    return delegua_map_itens(argv[0]);
+}
+static delegua_value map_limpar(sz argc, delegua_value *argv) {
+    UNUSED();
+    return delegua_map_limpar(argv[0]);
+}
 static delegua_value escrever(sz argc, delegua_value *argv) {
     for (sz i = 0; i < argc; ++i)
         delegua_escreva_intern(argv[i]);
@@ -447,7 +471,8 @@ static delegua_value ordenar(sz argc, delegua_value *argv) {
     return argv[0];
 }
 
-static const nativa globais[] = {{"assercao", assertion, 1, 2},
+static const nativa globais[] = {{"destruir", destruir, 1, 1},
+                                 {"assercao", assertion, 1, 2},
                                  {"falhar", falhar, 1, 1},
                                  {"escreva", escrever, 0, SIZE_MAX},
                                  {"leia", ler, 0, 1},
@@ -467,7 +492,12 @@ static const nativa globais[] = {{"assercao", assertion, 1, 2},
                                  {"filtrar", filtrar, 2, 2},
                                  {"paraCada", para_cada, 2, 2},
                                  {"todosEmCondicao", todos, 2, 2}};
-static const nativa metodos[] = {{"adicionar", adicionar, 1, 1},
+static const nativa metodos[] = {{"obter", map_obter, 1, 2},
+                                 {"definir", map_definir, 2, 2},
+                                 {"contemChave", map_contem, 1, 1},
+                                 {"itens", map_itens, 0, 0},
+                                 {"limpar", map_limpar, 0, 0},
+                                 {"adicionar", adicionar, 1, 1},
                                  {"empilhar", adicionar, 1, 1},
                                  {"tamanho", tamanho, 0, 0},
                                  {"inclui", inclui, 1, 1},
@@ -567,7 +597,8 @@ static bool method_allowed(delegua_value v, const char *name) {
         allowed = "|tamanho|inclui|contem|contém|fatiar|";
         break;
     case DELEGUA_T_MAP:
-        allowed = "|chaves|valores|tamanho|remover|inclui|contem|contém|";
+        allowed = "|chaves|valores|tamanho|remover|inclui|contem|contém|obter|definir|contemChave|"
+                  "itens|limpar|";
         break;
     default:
         return false;
@@ -601,4 +632,10 @@ delegua_value delegua_metodo_padrao(delegua_value receiver, const char *name) {
         return create_nulo();
     delegua_panicf("Propriedade desconhecida: %s", name);
     return create_nulo();
+}
+
+/* Entrada controlada para bibliotecas Delégua: não passa pelo namespace de
+ * propriedades do mapa, onde uma chave pode ocultar o método itens. */
+delegua_value rt_colecoes_builtin(const char *name) {
+    return !strcmp(name, "cgdDicionarioItens") ? create_funcao(map_itens, 1) : create_nulo();
 }
