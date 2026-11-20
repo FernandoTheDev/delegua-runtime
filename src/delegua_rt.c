@@ -16,12 +16,26 @@
  */
 
 #include "delegua_rt.h"
+#include "assincrono.h"
 
 // ponto de entrada
 int main(int argc, char *argv[]) {
     GC_INIT();
+    GC_allow_register_threads();
+    (void)delegua_classe_objeto();
+    (void)delegua_classe_excecao();
     program_create(&context, argc, argv);
-    delegua_main();
+    delegua_try_frame *root = delegua_tentar();
+    volatile bool failed = false;
+    volatile int status = EXIT_SUCCESS;
+    if (setjmp(root->env) == 0) {
+        delegua_main();
+        status = rt_async_program_finish();
+    } else
+        failed = true;
+    delegua_sair_tente(root);
+    if (failed)
+        status = rt_async_program_abort(root->error);
     program_free(&context);
-    return EXIT_SUCCESS;
+    return status;
 }

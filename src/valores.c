@@ -22,14 +22,17 @@ program_context *context = null;
 
 // faz tipo -> string
 const char *delegua_type_strings[DELEGUA_T_COUNT] = {
-    [DELEGUA_T_NUM] = "numero",     [DELEGUA_T_REAL] = "real",
-    [DELEGUA_T_BOOL] = "logico",    [DELEGUA_T_TEXT] = "texto",
-    [DELEGUA_T_VETOR] = "vetor",    [DELEGUA_T_TUPLA] = "tupla",
-    [DELEGUA_T_MAP] = "dicionário", [DELEGUA_T_NULO] = "nulo",
-    [DELEGUA_T_CLASSE] = "classe",  [DELEGUA_T_OBJETO] = "objeto",
-    [DELEGUA_T_FUNCAO] = "função",  [DELEGUA_T_BIBLIOTECA] = "biblioteca",
-    [DELEGUA_T_MODULO] = "módulo",  [DELEGUA_T_PTR] = "ponteiro",
-    [DELEGUA_T_REDE] = "rede",
+    [DELEGUA_T_NUM] = "numero",        [DELEGUA_T_REAL] = "real",
+    [DELEGUA_T_BOOL] = "logico",       [DELEGUA_T_TEXT] = "texto",
+    [DELEGUA_T_VETOR] = "vetor",       [DELEGUA_T_TUPLA] = "tupla",
+    [DELEGUA_T_MAP] = "dicionário",    [DELEGUA_T_NULO] = "nulo",
+    [DELEGUA_T_CLASSE] = "classe",     [DELEGUA_T_OBJETO] = "objeto",
+    [DELEGUA_T_FUNCAO] = "função",     [DELEGUA_T_BIBLIOTECA] = "biblioteca",
+    [DELEGUA_T_MODULO] = "módulo",     [DELEGUA_T_PTR] = "ponteiro",
+    [DELEGUA_T_PROMESSA] = "promessa", [DELEGUA_T_REDE] = "rede",
+    [DELEGUA_T_SOCKET] = "socket",     [DELEGUA_T_TAREFA] = "tarefa",
+    [DELEGUA_T_CANAL] = "canal",       [DELEGUA_T_BYTES] = "bytes",
+    [DELEGUA_T_SQLITE] = "sqlite",
 };
 
 const char *delegua_type_name(delegua_type t) {
@@ -58,9 +61,9 @@ f64 rt_parse_real(delegua_value v) {
     return n;
 }
 
-const delegua_local *delegua_local_atual = NULL;
-const char *delegua_arquivo_atual = NULL;
-unsigned delegua_linha_atual = 0, delegua_coluna_atual = 0;
+DELEGUA_TLS const delegua_local *delegua_local_atual = NULL;
+DELEGUA_TLS const char *delegua_arquivo_atual = NULL;
+DELEGUA_TLS unsigned delegua_linha_atual = 0, delegua_coluna_atual = 0;
 void delegua_localizar(const char *arquivo, unsigned linha, unsigned coluna) {
     delegua_local_atual = NULL; /* Compatibilidade da API nativa anterior. */
     delegua_arquivo_atual = arquivo;

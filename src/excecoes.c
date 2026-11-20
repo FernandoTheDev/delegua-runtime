@@ -1,23 +1,26 @@
 #include "interno.h"
-sz delegua_call_depth;
-static delegua_try_frame *active;
+#include <pthread.h>
+DELEGUA_TLS sz delegua_call_depth;
+static DELEGUA_TLS delegua_try_frame *active;
 static delegua_value exception_class, object_class;
-static bool reporting;
+static pthread_once_t core_classes_once = PTHREAD_ONCE_INIT;
+static DELEGUA_TLS bool reporting;
 static delegua_value init_exception(sz argc, delegua_value *argv) {
     (void)argc;
     return delegua_objeto_setar(argv[0], "mensagem", argv[1]);
 }
+static void init_core_classes(void) {
+    object_class = create_classe("Objeto", create_nulo());
+    exception_class = create_classe("Excecao", object_class);
+    delegua_classe_campo(exception_class, "mensagem", "texto", 0);
+    delegua_classe_metodo(exception_class, "construtor", create_funcao(init_exception, 1));
+}
 delegua_value delegua_classe_objeto(void) {
-    if (object_class.type == DELEGUA_T_NULO)
-        object_class = create_classe("Objeto", create_nulo());
+    pthread_once(&core_classes_once, init_core_classes);
     return object_class;
 }
 delegua_value delegua_classe_excecao(void) {
-    if (exception_class.type == DELEGUA_T_NULO) {
-        exception_class = create_classe("Excecao", delegua_classe_objeto());
-        delegua_classe_campo(exception_class, "mensagem", "texto", 0);
-        delegua_classe_metodo(exception_class, "construtor", create_funcao(init_exception, 1));
-    }
+    pthread_once(&core_classes_once, init_core_classes);
     return exception_class;
 }
 delegua_try_frame *delegua_tentar(void) {
@@ -39,6 +42,8 @@ void delegua_falhar(delegua_value value) {
         delegua_value message = delegua_para_texto(value);
         value = delegua_instanciar(delegua_classe_excecao(), 1, &message);
     }
+    delegua_local legacy = {delegua_arquivo_atual, delegua_linha_atual, delegua_coluna_atual};
+    rt_error_record_origin(value, delegua_local_atual ? delegua_local_atual : &legacy);
     if (active) {
         active->error = value;
         delegua_call_depth = active->call_depth;

@@ -1,3 +1,4 @@
+#include "assincrono.h"
 #include "interno.h"
 
 typedef struct {
@@ -492,7 +493,12 @@ static const nativa globais[] = {{"destruir", destruir, 1, 1},
                                  {"filtrar", filtrar, 2, 2},
                                  {"paraCada", para_cada, 2, 2},
                                  {"todosEmCondicao", todos, 2, 2}};
-static const nativa metodos[] = {{"obter", map_obter, 1, 2},
+static const nativa metodos[] = {{"entao", delegua_promessa_entao, 1, 1},
+                                 {"capturar", delegua_promessa_capturar, 1, 1},
+                                 {"cancelar", delegua_promessa_cancelar, 0, 0},
+                                 {"concluida", delegua_promessa_concluida, 0, 0},
+                                 {"cancelada", delegua_promessa_cancelada, 0, 0},
+                                 {"obter", map_obter, 1, 2},
                                  {"definir", map_definir, 2, 2},
                                  {"contemChave", map_contem, 1, 1},
                                  {"itens", map_itens, 0, 0},
@@ -541,6 +547,8 @@ delegua_value delegua_builtin(const char *name) {
     delegua_value cgd = delegua_cgd_builtin(name);
     if (cgd.type != DELEGUA_T_NULO)
         return cgd;
+    if (!strcmp(name, "Promessa"))
+        return rt_async_promise_class();
     if (!strcmp(name, "Excecao"))
         return delegua_classe_excecao();
     if (!strcmp(name, "Objeto"))
@@ -579,6 +587,10 @@ static bool method_allowed(delegua_value v, const char *name) {
             return true;
     const char *allowed = NULL;
     switch (v.type) {
+    case DELEGUA_T_PROMESSA:
+    case DELEGUA_T_TAREFA:
+        allowed = "|entao|capturar|cancelar|concluida|cancelada|";
+        break;
     case DELEGUA_T_TEXT:
         allowed =
             "|tamanho|inclui|contem|contém|fatiar|subtexto|aparar|apararInicio|apararFim|maiusculo|"

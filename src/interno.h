@@ -14,6 +14,7 @@ static inline void *rt_alloc(sz count, sz size) {
     return p;
 }
 
+const char *rt_sistema_texto(delegua_value value, bool empty);
 u32 rt_utf8_next(delegua_value text, sz *offset);
 sz rt_text_count(delegua_value text);
 sz rt_text_offset(delegua_value text, sz index);
@@ -32,8 +33,14 @@ delegua_value rt_clonar_objeto(delegua_value v, rt_clone_entry **memo, unsigned 
 void rt_clone_record(rt_clone_entry **memo, void *original, delegua_value copy);
 void delegua_imprimir_local(FILE *stream);
 void delegua_renderizar_erro(FILE *stream, const char *message, sz length);
+void rt_async_render_await(FILE *stream, const delegua_local *location);
+void rt_async_render_origin(FILE *stream, const delegua_local *location);
 delegua_value delegua_cgd_builtin(const char *name);
 delegua_value rt_rede_builtin(const char *name);
 delegua_value rt_arquivos_builtin(const char *name);
 delegua_value rt_colecoes_builtin(const char *name);
+void rt_error_record_origin(delegua_value error, const delegua_local *location);
+const delegua_local *rt_error_origin(delegua_value error);
+void rt_error_mark_cancelled(delegua_value error);
+bool rt_error_is_cancelled(delegua_value error);
 #endif

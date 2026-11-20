@@ -1,16 +1,20 @@
+#include "assincrono.h"
 #include "interno.h"
 typedef struct classe {
-    delegua_value nome, metodos, estaticos, campos, acessos, getters, setters, accessor_modes,
-        decoradores, decoradores_campos, tipos_campos;
+    delegua_value nome, metodos, estaticos, tipos_estaticos, campos, acessos, getters, setters,
+        accessor_modes, decoradores, decoradores_campos, tipos_campos;
     delegua_value inicializadores;
     bool fechada, abstrata;
-    delegua_value interfaces;
+    delegua_value interfaces, mixins;
     struct classe *super;
 } classe;
 typedef struct {
     classe *tipo;
     delegua_value campos;
     unsigned destruicao;
+    delegua_local origem_erro;
+    bool tem_origem_erro;
+    bool cancelamento_nativo;
 } objeto;
 typedef struct {
     delegua_native_fn fn;
@@ -28,7 +32,9 @@ delegua_value create_classe(const char *nome, delegua_value super) {
     c->nome = create_text(nome);
     c->metodos = create_map();
     c->estaticos = create_map();
+    c->tipos_estaticos = create_map();
     c->interfaces = create_vetor();
+    c->mixins = create_vetor();
     c->inicializadores = create_vetor();
     c->campos = create_map();
     c->acessos = create_map();
@@ -48,9 +54,15 @@ void delegua_classe_metodo(delegua_value c, const char *nome, delegua_value f) {
     delegua_map_setar(((classe *)c.value.ptr)->metodos, create_text(nome), f);
 }
 static delegua_value metodo(classe *c, delegua_value nome) {
-    for (; c; c = c->super)
+    for (; c; c = c->super) {
         if (delegua_map_contem(c->metodos, nome))
             return delegua_map_obter(c->metodos, nome);
+        for (sz i = c->mixins.value.vetor->size; i > 0; --i) {
+            delegua_value found = metodo(c->mixins.value.vetor->values[i - 1].value.ptr, nome);
+            if (found.type != DELEGUA_T_NULO)
+                return found;
+        }
+    }
     return create_nulo();
 }
 static delegua_value ligar(delegua_value f, delegua_value receptor) {
@@ -73,6 +85,11 @@ delegua_value delegua_objeto_obter(delegua_value v, const char *nome) {
             break;
         if (delegua_map_contem(current->estaticos, key))
             return delegua_map_obter(current->estaticos, key);
+        for (sz i = current->mixins.value.vetor->size; i > 0; --i) {
+            classe *mx = current->mixins.value.vetor->values[i - 1].value.ptr;
+            if (delegua_map_contem(mx->estaticos, key))
+                return delegua_map_obter(mx->estaticos, key);
+        }
     }
     delegua_value f = metodo(o->tipo, key);
     if (f.type == DELEGUA_T_NULO)
@@ -121,10 +138,23 @@ void delegua_classe_inicializador(delegua_value value, const char *name, delegua
 static void inicializar_campos(classe *type, delegua_value self) {
     if (type->super)
         inicializar_campos(type->super, self);
+    for (sz m = 0; m < type->mixins.value.vetor->size; ++m)
+        inicializar_campos(type->mixins.value.vetor->values[m].value.ptr, self);
     for (sz index = 0; index < type->inicializadores.value.vetor->size; ++index) {
         delegua_value pair = type->inicializadores.value.vetor->values[index];
         delegua_value value = delegua_chamar(ligar(pair.value.vetor->values[1], self), 0, NULL);
         delegua_objeto_setar(self, pair.value.vetor->values[0].value.text.ptr, value);
+    }
+}
+static void semear_campos(classe *c, delegua_value campos) {
+    for (; c; c = c->super) {
+        for (sz m = 0; m < c->mixins.value.vetor->size; ++m)
+            semear_campos(c->mixins.value.vetor->values[m].value.ptr, campos);
+        sz n = delegua_tamanho(c->campos);
+        for (sz i = 0; i < n; ++i) {
+            delegua_value pair = delegua_iterar(c->campos, i);
+            delegua_map_setar(campos, pair.value.vetor->values[0], create_nulo());
+        }
     }
 }
 delegua_value delegua_instanciar(delegua_value v, sz argc, delegua_value *argv) {
@@ -135,13 +165,7 @@ delegua_value delegua_instanciar(delegua_value v, sz argc, delegua_value *argv) 
     if (o->tipo->abstrata)
         delegua_panic("Classe abstrata/interface não pode ser instanciada.");
     o->campos = create_map();
-    for (classe *c = o->tipo; c; c = c->super) {
-        sz n = delegua_tamanho(c->campos);
-        for (sz i = 0; i < n; ++i) {
-            delegua_value pair = delegua_iterar(c->campos, i);
-            delegua_map_setar(o->campos, pair.value.vetor->values[0], create_nulo());
-        }
-    }
+    semear_campos(o->tipo, o->campos);
     delegua_value out = {.type = DELEGUA_T_OBJETO, .value.ptr = o};
     inicializar_campos(o->tipo, out);
     delegua_value init = metodo(o->tipo, create_text("construtor"));
@@ -207,6 +231,19 @@ delegua_value create_funcao_intervalo(delegua_native_fn fn, sz minimo, sz maximo
 delegua_value delegua_ligar(delegua_value fn, delegua_value receiver) {
     return ligar(fn, receiver);
 }
+delegua_value delegua_ajustar_metodo_envelope(delegua_value original, delegua_value wrapped) {
+    CHECK_ARG_TYPE(wrapped.type, DELEGUA_T_FUNCAO, 2);
+    if (original.type == DELEGUA_T_FUNCAO && original.value.ptr == wrapped.value.ptr)
+        return wrapped;
+    funcao *src = wrapped.value.ptr;
+    funcao *copy = rt_alloc(1, sizeof(*copy));
+    *copy = *src;
+    if (copy->minimo > 0)
+        copy->minimo--;
+    if (copy->maximo != SIZE_MAX && copy->maximo > 0)
+        copy->maximo--;
+    return (delegua_value){.type = DELEGUA_T_FUNCAO, .value.ptr = copy};
+}
 
 void delegua_classe_abstrata(delegua_value value) {
     CHECK_ARG_TYPE(value.type, DELEGUA_T_CLASSE, 1);
@@ -217,6 +254,13 @@ void delegua_classe_interface(delegua_value value, delegua_value contract) {
     CHECK_ARG_TYPE(contract.type, DELEGUA_T_CLASSE, 2);
     delegua_vetor_adicionar(&((classe *)value.value.ptr)->interfaces, contract);
 }
+void delegua_classe_mescla(delegua_value value, delegua_value mixin) {
+    CHECK_ARG_TYPE(value.type, DELEGUA_T_CLASSE, 1);
+    CHECK_ARG_TYPE(mixin.type, DELEGUA_T_CLASSE, 2);
+    classe *c = value.value.ptr;
+    delegua_vetor_adicionar(&c->mixins, mixin);
+    delegua_vetor_adicionar(&c->interfaces, mixin);
+}
 static bool derivada(classe *c, classe *base) {
     for (; c; c = c->super) {
         if (c == base)
@@ -224,14 +268,23 @@ static bool derivada(classe *c, classe *base) {
         for (sz i = 0; i < c->interfaces.value.vetor->size; ++i)
             if (c->interfaces.value.vetor->values[i].value.ptr == base)
                 return true;
+        for (sz i = 0; i < c->mixins.value.vetor->size; ++i)
+            if (derivada(c->mixins.value.vetor->values[i].value.ptr, base))
+                return true;
     }
     return false;
 }
 static classe *dona(classe *c, delegua_value key) {
-    for (; c; c = c->super)
+    for (; c; c = c->super) {
         if (delegua_map_contem(c->campos, key) || delegua_map_contem(c->metodos, key) ||
             delegua_map_contem(c->estaticos, key))
             return c;
+        for (sz i = c->mixins.value.vetor->size; i > 0; --i) {
+            classe *found = dona(c->mixins.value.vetor->values[i - 1].value.ptr, key);
+            if (found)
+                return found;
+        }
+    }
     return NULL;
 }
 static void acesso(classe *owner, delegua_value key, delegua_value caller) {
@@ -277,6 +330,17 @@ void delegua_classe_metodo_estatico(delegua_value v, const char *name, delegua_v
     classe *c = v.value.ptr;
     delegua_value key = create_text(name);
     delegua_map_setar(c->estaticos, key, fn);
+    delegua_map_setar(c->acessos, key, create_num(visibility));
+}
+void delegua_classe_campo_estatico(delegua_value v, const char *name, delegua_tipo *type,
+                                   delegua_value initial, int visibility) {
+    CHECK_ARG_TYPE(v.type, DELEGUA_T_CLASSE, 1);
+    CHECK_NULL(type);
+    delegua_assegurar_descr(initial, type);
+    classe *c = v.value.ptr;
+    delegua_value key = create_text(name);
+    delegua_map_setar(c->estaticos, key, initial);
+    delegua_map_setar(c->tipos_estaticos, key, create_ptr(type));
     delegua_map_setar(c->acessos, key, create_num(visibility));
 }
 bool delegua_tipo_compativel(delegua_value v, const char *type) {
@@ -403,6 +467,19 @@ delegua_value delegua_definir_em(delegua_value v, const char *name, delegua_valu
                                  delegua_value caller) {
     if (v.type == DELEGUA_T_MAP)
         return delegua_map_setar(v, create_text(name), value);
+    if (v.type == DELEGUA_T_CLASSE) {
+        delegua_value key = create_text(name);
+        classe *owner = dona(v.value.ptr, key);
+        if (!owner)
+            delegua_panicf("Propriedade estática não declarada: %s", name);
+        acesso(owner, key, caller);
+        delegua_value desc = delegua_map_obter(owner->tipos_estaticos, key);
+        if (desc.type != DELEGUA_T_PTR)
+            delegua_panic("Não é possível modificar método ou enum estático.");
+        delegua_assegurar_descr(value, desc.value.ptr);
+        delegua_map_setar(owner->estaticos, key, value);
+        return value;
+    }
     CHECK_ARG_TYPE(v.type, DELEGUA_T_OBJETO, 1);
     objeto *o = v.value.ptr;
     delegua_value key = create_text(name);
@@ -412,6 +489,13 @@ delegua_value delegua_definir_em(delegua_value v, const char *name, delegua_valu
             delegua_panicf("Propriedade não declarada: %s", name);
     } else {
         acesso(owner, key, caller);
+        if (!delegua_map_contem(owner->campos, key) &&
+            delegua_map_contem(owner->tipos_estaticos, key)) {
+            delegua_value desc = delegua_map_obter(owner->tipos_estaticos, key);
+            delegua_assegurar_descr(value, desc.value.ptr);
+            delegua_map_setar(owner->estaticos, key, value);
+            return value;
+        }
         delegua_value type = delegua_map_obter(owner->campos, key);
         if (type.type != DELEGUA_T_TEXT)
             delegua_panic("Não é possível substituir um método.");
@@ -581,6 +665,49 @@ delegua_tipo *delegua_descr_tupla(sz count, delegua_tipo **elements) {
         memcpy(d->elements, elements, count * sizeof(*elements));
     return d;
 }
+delegua_tipo *delegua_descr_promessa(delegua_tipo *result) {
+    delegua_tipo *d = delegua_descr_array(result);
+    d->kind = 4;
+    return d;
+}
+delegua_tipo *delegua_descr_tarefa(delegua_tipo *result) {
+    delegua_tipo *d = delegua_descr_array(result);
+    d->kind = 5;
+    return d;
+}
+static const char *canonical_type(const char *name) {
+    if (!strcmp(name, "inteiro") || !strcmp(name, "longo") || !strcmp(name, "numero") ||
+        !strcmp(name, "número"))
+        return "inteiro";
+    if (!strcmp(name, "decimal"))
+        return "real";
+    if (!strcmp(name, "lógico") || !strcmp(name, "booleano") || !strcmp(name, "binario") ||
+        !strcmp(name, "binário"))
+        return "logico";
+    if (!strcmp(name, "dicionário"))
+        return "dicionario";
+    if (!strcmp(name, "função"))
+        return "funcao";
+    return name;
+}
+bool delegua_descr_refinavel(delegua_tipo *left, delegua_tipo *right, unsigned depth) {
+    if (depth > 256)
+        delegua_panic("Tipo de Promessa profundo demais.");
+    if (left->kind == 0 && (!strcmp(left->name, "qualquer") || !strcmp(left->name, "Objeto")))
+        return true;
+    if (right->kind == 0 && (!strcmp(right->name, "qualquer") || !strcmp(right->name, "Objeto")))
+        return true;
+    if (left->kind != right->kind || left->count != right->count)
+        return false;
+    if (left->kind == 0)
+        return !strcmp(canonical_type(left->name), canonical_type(right->name));
+    if (left->kind == 1)
+        return left->klass.value.ptr == right->klass.value.ptr;
+    for (sz i = 0; i < left->count; i++)
+        if (!delegua_descr_refinavel(left->elements[i], right->elements[i], depth + 1))
+            return false;
+    return true;
+}
 static bool conforme(delegua_value v, delegua_tipo *d, unsigned depth) {
     if (depth > 256)
         delegua_panic("Tipo estrutural profundo demais.");
@@ -589,6 +716,10 @@ static bool conforme(delegua_value v, delegua_tipo *d, unsigned depth) {
         return delegua_tipo_compativel(v, d->name);
     if (d->kind == 1)
         return delegua_instancia_de(v, d->klass);
+    if (d->kind == 4)
+        return v.type == DELEGUA_T_PROMESSA && rt_promise_accepts_type(v.value.ptr, d->elements[0]);
+    if (d->kind == 5)
+        return v.type == DELEGUA_T_TAREFA && rt_promise_accepts_type(v.value.ptr, d->elements[0]);
     if (d->kind == 2) {
         if (v.type != DELEGUA_T_VETOR)
             return false;
@@ -628,10 +759,15 @@ static bool mesmo_tipo(delegua_tipo *a, delegua_tipo *b) {
             return false;
     return true;
 }
+bool delegua_descr_igual(delegua_tipo *left, delegua_tipo *right) {
+    return mesmo_tipo(left, right);
+}
 static void fixar_contrato(delegua_value v, delegua_tipo *d, unsigned depth) {
     if (depth > 256)
         delegua_panic("Contrato estrutural profundo demais.");
-    if (d->kind == 2) {
+    if (d->kind == 4 || d->kind == 5) {
+        rt_promise_add_type(v.value.ptr, d->elements[0]);
+    } else if (d->kind == 2) {
         delegua_vetor_data *data = v.value.vetor;
         bool found = false;
         for (delegua_restricao *r = data->restricoes; r; r = r->next)
@@ -657,6 +793,8 @@ delegua_value delegua_assegurar_descr(delegua_value v, delegua_tipo *d) {
         const char *expected = d->kind == 0   ? d->name
                                : d->kind == 1 ? ((classe *)d->klass.value.ptr)->nome.value.text.ptr
                                : d->kind == 2 ? "vetor tipado"
+                               : d->kind == 4 ? "Promessa<T>"
+                               : d->kind == 5 ? "Tarefa<T>"
                                               : "tupla tipada";
         delegua_panicf("Incompatibilidade de tipo: esperado %s, recebido %s.", expected,
                        GET_TYPE(v));
@@ -680,4 +818,28 @@ bool delegua_objeto_metodo_definido(delegua_value v, const char *name) {
     if (v.type != DELEGUA_T_OBJETO)
         return false;
     return metodo(((objeto *)v.value.ptr)->tipo, create_text(name)).type == DELEGUA_T_FUNCAO;
+}
+
+void rt_error_record_origin(delegua_value error, const delegua_local *location) {
+    if (error.type != DELEGUA_T_OBJETO || !location || !location->arquivo)
+        return;
+    objeto *object = error.value.ptr;
+    if (!object->tem_origem_erro) {
+        object->origem_erro = *location;
+        object->tem_origem_erro = true;
+    }
+}
+const delegua_local *rt_error_origin(delegua_value error) {
+    if (error.type != DELEGUA_T_OBJETO)
+        return NULL;
+    objeto *object = error.value.ptr;
+    return object->tem_origem_erro ? &object->origem_erro : NULL;
+}
+
+void rt_error_mark_cancelled(delegua_value error) {
+    if (error.type == DELEGUA_T_OBJETO)
+        ((objeto *)error.value.ptr)->cancelamento_nativo = true;
+}
+bool rt_error_is_cancelled(delegua_value error) {
+    return error.type == DELEGUA_T_OBJETO && ((objeto *)error.value.ptr)->cancelamento_nativo;
 }

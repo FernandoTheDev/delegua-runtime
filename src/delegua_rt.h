@@ -20,7 +20,21 @@
 
 #include <assert.h>
 #include <dlfcn.h>
+#ifndef GC_THREADS
+#define GC_THREADS
+#endif
+#ifndef GC_NO_THREAD_REDIRECTS
+#define GC_NO_THREAD_REDIRECTS
+#endif
 #include <gc.h>
+
+#if defined(__GNUC__) || defined(__clang__)
+#define DELEGUA_NORETURN __attribute__((noreturn))
+#define DELEGUA_TLS __thread
+#else
+#define DELEGUA_NORETURN
+#define DELEGUA_TLS
+#endif
 #include <inttypes.h>
 #include <limits.h>
 #include <setjmp.h>
@@ -101,6 +115,12 @@ enum delegua_type {
     DELEGUA_T_BIBLIOTECA,
     DELEGUA_T_MODULO,
     DELEGUA_T_REDE,
+    DELEGUA_T_SOCKET,
+    DELEGUA_T_PROMESSA,
+    DELEGUA_T_TAREFA,
+    DELEGUA_T_CANAL,
+    DELEGUA_T_BYTES,
+    DELEGUA_T_SQLITE,
     DELEGUA_T_COUNT,
 };
 
@@ -120,13 +140,13 @@ typedef struct delegua_local {
     unsigned linha, coluna;
 } delegua_local;
 #define DELEGUA_ERRO_GENERICO "R0001"
-extern const delegua_local *delegua_local_atual;
-extern const char *delegua_arquivo_atual;
-extern unsigned delegua_linha_atual, delegua_coluna_atual;
+extern DELEGUA_TLS const delegua_local *delegua_local_atual;
+extern DELEGUA_TLS const char *delegua_arquivo_atual;
+extern DELEGUA_TLS unsigned delegua_linha_atual, delegua_coluna_atual;
 void delegua_localizar(const char *arquivo, unsigned linha, unsigned coluna);
-void delegua_erro(const char *message);
-static inline void delegua_panic(const char *message);
-static inline void delegua_panicf(const char *format, ...);
+DELEGUA_NORETURN void delegua_erro(const char *message);
+static inline DELEGUA_NORETURN void delegua_panic(const char *message);
+static inline DELEGUA_NORETURN void delegua_panicf(const char *format, ...);
 
 static inline bool delegua_type_valid_to_cast(delegua_type t) {
     return t >= DELEGUA_T_BOOL && t <= DELEGUA_T_TEXT;
@@ -200,7 +220,7 @@ static inline delegua_value create_text_concat(delegua_value l, delegua_value r)
     memcpy(ptr, l.value.text.ptr, l1);
     memcpy(ptr + l1, r.value.text.ptr, l2);
     ptr[size] = '\0';
-    return create_text_len(ptr, size);
+    return (delegua_value){.type = DELEGUA_T_TEXT, .value.text.ptr = ptr, .value.text.len = size};
 }
 
 static inline delegua_value create_ptr(void *ptr) {
@@ -304,9 +324,9 @@ extern program_context *context;
 extern void delegua_main(void); // todo backend precisa gerar essa função ao invés da main()
 
 // funções auxiliares para erro //////////////////////////////////////////////////////////////////
-static inline void delegua_panic(const char *message) { delegua_erro(message); }
+static inline DELEGUA_NORETURN void delegua_panic(const char *message) { delegua_erro(message); }
 
-static inline void delegua_panicf(const char *format, ...) {
+static inline DELEGUA_NORETURN void delegua_panicf(const char *format, ...) {
     va_list args;
     va_start(args, format);
     char buffer[1024];
@@ -386,10 +406,10 @@ typedef struct delegua_try_frame {
     delegua_value error;
     sz call_depth;
 } delegua_try_frame;
-extern sz delegua_call_depth;
+extern DELEGUA_TLS sz delegua_call_depth;
 delegua_try_frame *delegua_tentar(void);
 void delegua_sair_tente(delegua_try_frame *frame);
-void delegua_falhar(delegua_value value);
+DELEGUA_NORETURN void delegua_falhar(delegua_value value);
 delegua_value delegua_classe_excecao(void);
 delegua_value delegua_classe_objeto(void);
 bool delegua_tipo_compativel(delegua_value v, const char *type);
@@ -411,6 +431,7 @@ delegua_value delegua_intervalo(delegua_value v, delegua_value start, delegua_va
 void delegua_classe_acessor(delegua_value c, const char *name, delegua_value getter,
                             delegua_value setter, bool readable, bool writable);
 delegua_value delegua_funcao_cache(delegua_value *slot, delegua_native_fn fn, sz minimo, sz maximo);
+delegua_value delegua_ajustar_metodo_envelope(delegua_value original, delegua_value wrapped);
 
 void delegua_definir_decoradores(delegua_value value, delegua_value metadata);
 void delegua_classe_decoradores_campo(delegua_value value, const char *name,
@@ -423,10 +444,19 @@ bool delegua_metodo_existe(delegua_value receiver, const char *name);
 delegua_tipo *delegua_descr_nome(const char *name);
 delegua_tipo *delegua_descr_classe(delegua_value klass);
 delegua_tipo *delegua_descr_array(delegua_tipo *base);
+delegua_tipo *delegua_descr_promessa(delegua_tipo *result);
+delegua_tipo *delegua_descr_tarefa(delegua_tipo *result);
+delegua_value delegua_rotina_iniciar(delegua_native_fn fn, sz argc, const delegua_value *argv,
+                                     delegua_tipo *result_type);
+bool delegua_descr_igual(delegua_tipo *left, delegua_tipo *right);
+bool delegua_descr_refinavel(delegua_tipo *left, delegua_tipo *right, unsigned depth);
 delegua_tipo *delegua_descr_tupla(sz count, delegua_tipo **elements);
 delegua_value delegua_assegurar_descr(delegua_value value, delegua_tipo *type);
 void delegua_classe_campo_tipo(delegua_value klass, const char *name, delegua_tipo *type,
                                int access);
+void delegua_classe_campo_estatico(delegua_value klass, const char *name, delegua_tipo *type,
+                                   delegua_value initial, int access);
+void delegua_classe_mescla(delegua_value klass, delegua_value mixin);
 bool delegua_objeto_metodo_definido(delegua_value v, const char *name);
 void delegua_vetor_validar_elemento(delegua_value vector, delegua_value value);
 #endif

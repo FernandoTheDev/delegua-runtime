@@ -6,6 +6,8 @@ CC=${CC:-clang}
 # CFLAGS permite executar a mesma suíte com sanitizadores e NDEBUG.
 "$CC" -std=c99 -Wall -Wextra -Werror ${CFLAGS:-} tests/runtime.c libdelegua_rt.o $(pkg-config --cflags --libs bdw-gc libcurl) -rdynamic -ldl -lm -o .build/test-runtime
 .build/test-runtime
+"$CC" -std=c99 -Wall -Wextra -Werror ${CFLAGS:-} tests/assincrono.c tests/rotinas_pool.c libdelegua_rt.o $(pkg-config --cflags --libs bdw-gc libcurl) -rdynamic -ldl -lm -o .build/test-async
+.build/test-async
 for mode in source-site legacy-source power intdiv membership tuple-conversion random-range index overflow sub mul div cast parse shift slice tuple null allocation key arity ffi closed; do
 	set +e
 	.build/test-runtime "$mode" >.build/error.log 2>&1

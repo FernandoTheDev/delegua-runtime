@@ -278,7 +278,10 @@ delegua_value rt_clonar(delegua_value v, rt_clone_entry **memo, unsigned depth) 
         original = v.value.vetor;
     else if (v.type == DELEGUA_T_MAP || v.type == DELEGUA_T_OBJETO)
         original = v.value.ptr;
-    else if (v.type == DELEGUA_T_PTR || v.type == DELEGUA_T_BIBLIOTECA)
+    else if (v.type == DELEGUA_T_PTR || v.type == DELEGUA_T_BIBLIOTECA ||
+             v.type == DELEGUA_T_PROMESSA || v.type == DELEGUA_T_TAREFA ||
+             v.type == DELEGUA_T_CANAL || v.type == DELEGUA_T_SQLITE || v.type == DELEGUA_T_REDE ||
+             v.type == DELEGUA_T_SOCKET)
         delegua_panic("Clonagem de recursos nativos não permitida.");
     else
         return v;

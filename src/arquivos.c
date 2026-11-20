@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #include "interno.h"
+#include "rotinas_reactor.h"
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -64,6 +65,82 @@ static delegua_value arquivo_ler(sz argc, delegua_value *argv) {
     if (close(fd) < 0)
         arquivo_erro("fechar", errno);
     return create_text_len(buffer, used);
+}
+
+/* O pacote reserva espaço para seus metadados além dos bytes do texto. */
+enum { ASYNC_FILE_MAX = 8 * 1024 * 1024, READ_CHUNK = 65536 };
+
+static rt_transfer_status read_worker(const rt_pool_job *job, rt_transfer_packet **packet) {
+    rt_transfer_view path, requested;
+    if (rt_transfer_get(*packet, 0, &path) != RT_TRANSFER_OK || path.kind != RT_TRANSFER_TEXT ||
+        rt_transfer_get(*packet, 1, &requested) != RT_TRANSFER_OK ||
+        requested.kind != RT_TRANSFER_INT || requested.value.integer < 0 ||
+        requested.value.integer > ASYNC_FILE_MAX)
+        return RT_TRANSFER_INVALID;
+    char *name = malloc(path.value.text.length + 1);
+    if (!name)
+        return RT_TRANSFER_MEMORY;
+    memcpy(name, path.value.text.bytes, path.value.text.length);
+    name[path.value.text.length] = 0;
+    int fd = open(name, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+    free(name);
+    if (fd < 0)
+        return RT_TRANSFER_IO;
+    struct stat info;
+    rt_transfer_status status = RT_TRANSFER_IO;
+    unsigned char *buffer = NULL;
+    sz used = 0, capacity = 0, limit = (sz)requested.value.integer;
+    if (fstat(fd, &info) || !S_ISREG(info.st_mode))
+        goto done;
+    while (!rt_pool_cancelled(job)) {
+        if (used == capacity) {
+            capacity = capacity ? capacity * 2 : READ_CHUNK;
+            if (capacity > limit + 1)
+                capacity = limit + 1;
+            unsigned char *larger = realloc(buffer, capacity);
+            if (!larger) {
+                status = RT_TRANSFER_MEMORY;
+                break;
+            }
+            buffer = larger;
+        }
+        sz remaining = capacity - used;
+        ssize_t n = read(fd, buffer + used, remaining < READ_CHUNK ? remaining : READ_CHUNK);
+        if (n < 0 && errno == EINTR)
+            continue;
+        if (n < 0)
+            break;
+        if (!n) {
+            rt_transfer_view text = {.kind = RT_TRANSFER_TEXT, .value.text = {buffer, used}};
+            rt_transfer_packet *result;
+            status = rt_transfer_pack_views(1, &text, &result);
+            if (status == RT_TRANSFER_OK) {
+                rt_transfer_free(*packet);
+                *packet = result;
+            }
+            break;
+        }
+        used += (sz)n;
+        if (used > limit) {
+            status = RT_TRANSFER_LIMIT;
+            break;
+        }
+    }
+done:
+    free(buffer);
+    if (close(fd) && status == RT_TRANSFER_OK)
+        status = RT_TRANSFER_IO;
+    return status;
+}
+
+delegua_value delegua_rotina_arquivoLer(sz argc, delegua_value *argv) {
+    CHECK_ARGC(argc, 2);
+    (void)arquivo_caminho(argv[0]);
+    CHECK_ARG_TYPE(argv[1].type, DELEGUA_T_NUM, 2);
+    if (argv[1].value.num < 0 || argv[1].value.num > ASYNC_FILE_MAX)
+        delegua_panic("Limite de leitura assíncrona deve estar entre 0 e 8 MiB.");
+    return (delegua_value){.type = DELEGUA_T_PROMESSA,
+                           .value.ptr = rt_routine_start(read_worker, argc, argv)};
 }
 
 static delegua_value arquivo_escrever(sz argc, delegua_value *argv) {

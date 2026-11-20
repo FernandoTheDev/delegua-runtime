@@ -137,3 +137,18 @@ void delegua_renderizar_erro(FILE *stream, const char *message, sz length) {
     fprintf(stream, ":%u:%u }\n", local->linha, local->coluna);
     trecho(stream, local);
 }
+
+static void async_note(FILE *stream, const char *label, const delegua_local *location) {
+    if (!location || !location->arquivo)
+        return;
+    fputs(label, stream);
+    texto_seguro(stream, location->arquivo, strlen(location->arquivo));
+    fprintf(stream, ":%u:%u }\n", location->linha, location->coluna);
+}
+
+void rt_async_render_origin(FILE *stream, const delegua_local *location) {
+    async_note(stream, " nota: origem da rejeição assíncrona em { ", location);
+}
+void rt_async_render_await(FILE *stream, const delegua_local *location) {
+    async_note(stream, " nota: aguardada em { ", location);
+}
