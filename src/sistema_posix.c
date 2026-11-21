@@ -1,5 +1,7 @@
 #define _GNU_SOURCE
 #include "interno.h"
+#include <sched.h>
+#include <sys/resource.h>
 #include <sys/utsname.h>
 #include <time.h>
 #include <unistd.h>
@@ -142,4 +144,327 @@ delegua_value delegua_ffi_sistemaTimestamp(sz argc, delegua_value *argv) {
     if (ts == (time_t)-1 && parts.tm_year != 69)
         delegua_panic("Tempo: data/hora UTC inválida.");
     return create_num((i64)ts);
+}
+
+i64 rt_ler_proc_kb(const char *path, const char *prefix) {
+    FILE *fp = fopen(path, "r");
+    if (!fp)
+        return -1;
+    char line[256];
+    sz plen = strlen(prefix);
+    i64 val = -1;
+    while (fgets(line, sizeof(line), fp)) {
+        if (strncmp(line, prefix, plen) == 0) {
+            const char *p = line + plen;
+            while (*p == ' ' || *p == '\t')
+                ++p;
+            val = (i64)strtoll(p, NULL, 10);
+            break;
+        }
+    }
+    fclose(fp);
+    return val;
+}
+
+static bool ler_linha_arquivo(const char *path, char *buf, sz cap) {
+    FILE *fp = fopen(path, "r");
+    if (!fp)
+        return false;
+    bool ok = fgets(buf, (int)cap, fp) != NULL;
+    fclose(fp);
+    if (ok) {
+        sz n = strlen(buf);
+        while (n > 0 && (buf[n - 1] == '\n' || buf[n - 1] == '\r'))
+            buf[--n] = '\0';
+    }
+    return ok;
+}
+
+static bool ler_caminho_cgroup_v2(char *out, sz cap) {
+    FILE *fp = fopen("/proc/self/cgroup", "r");
+    if (!fp)
+        return false;
+    char line[512];
+    bool found = false;
+    while (fgets(line, sizeof(line), fp)) {
+        if (strncmp(line, "0::", 3) == 0) {
+            const char *rel = line + 3;
+            sz len = strlen(rel);
+            while (len > 0 && (rel[len - 1] == '\n' || rel[len - 1] == '\r'))
+                len--;
+            if (len < cap) {
+                memcpy(out, rel, len);
+                out[len] = '\0';
+                found = true;
+            }
+            break;
+        }
+    }
+    fclose(fp);
+    return found;
+}
+
+/* Sobe na hierarquia do cgroup v2 buscando o menor limite efetivo de CPU ou memória. */
+static i64 ler_cgroup_v2_cpu_max(const char *cg_rel) {
+    char cur[512];
+    sz len = strlen(cg_rel);
+    if (len >= sizeof(cur))
+        return -1;
+    memcpy(cur, cg_rel, len + 1);
+    i64 best = -1;
+    for (;;) {
+        char path[640];
+        if (cur[0] == '\0' || (cur[0] == '/' && cur[1] == '\0'))
+            snprintf(path, sizeof(path), "/sys/fs/cgroup/cpu.max");
+        else
+            snprintf(path, sizeof(path), "/sys/fs/cgroup%s/cpu.max", cur);
+        char line[128];
+        if (ler_linha_arquivo(path, line, sizeof(line))) {
+            if (strncmp(line, "max", 3) != 0) {
+                char *end = NULL;
+                long long quota = strtoll(line, &end, 10);
+                if (end && quota > 0) {
+                    long long period = strtoll(end, NULL, 10);
+                    if (period > 0) {
+                        i64 cpus = (i64)((quota + period - 1) / period);
+                        if (cpus < 1)
+                            cpus = 1;
+                        if (best < 0 || cpus < best)
+                            best = cpus;
+                    }
+                }
+            }
+        }
+        if (cur[0] == '\0' || (cur[0] == '/' && cur[1] == '\0'))
+            break;
+        char *slash = (strrchr)(cur, '/');
+        if (!slash || slash == cur) {
+            cur[0] = '/';
+            cur[1] = '\0';
+        } else {
+            *slash = '\0';
+        }
+    }
+    return best;
+}
+
+static void ler_cgroup_v2_mem(const char *cg_rel, i64 *out_limit, i64 *out_usage) {
+    *out_limit = -1;
+    *out_usage = -1;
+    char cur[512];
+    sz len = strlen(cg_rel);
+    if (len >= sizeof(cur))
+        return;
+    memcpy(cur, cg_rel, len + 1);
+    for (;;) {
+        char path_max[640], path_cur[640];
+        if (cur[0] == '\0' || (cur[0] == '/' && cur[1] == '\0')) {
+            snprintf(path_max, sizeof(path_max), "/sys/fs/cgroup/memory.max");
+            snprintf(path_cur, sizeof(path_cur), "/sys/fs/cgroup/memory.current");
+        } else {
+            snprintf(path_max, sizeof(path_max), "/sys/fs/cgroup%s/memory.max", cur);
+            snprintf(path_cur, sizeof(path_cur), "/sys/fs/cgroup%s/memory.current", cur);
+        }
+        char line[128];
+        if (ler_linha_arquivo(path_max, line, sizeof(line)) && strncmp(line, "max", 3) != 0) {
+            long long lim = strtoll(line, NULL, 10);
+            if (lim > 0 && (*out_limit < 0 || (i64)lim < *out_limit)) {
+                *out_limit = (i64)lim;
+                if (ler_linha_arquivo(path_cur, line, sizeof(line))) {
+                    long long used = strtoll(line, NULL, 10);
+                    if (used >= 0)
+                        *out_usage = (i64)used;
+                }
+            }
+        }
+        if (cur[0] == '\0' || (cur[0] == '/' && cur[1] == '\0'))
+            break;
+        char *slash = (strrchr)(cur, '/');
+        if (!slash || slash == cur) {
+            cur[0] = '/';
+            cur[1] = '\0';
+        } else {
+            *slash = '\0';
+        }
+    }
+}
+
+void rt_detectar_recursos(rt_sistema_recursos *out) {
+    memset(out, 0, sizeof(*out));
+    long n_onln = sysconf(_SC_NPROCESSORS_ONLN);
+    out->cpus_logicas = n_onln > 0 ? (i64)n_onln : 1;
+
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    if (sched_getaffinity(0, sizeof(cpuset), &cpuset) == 0) {
+        int aff = CPU_COUNT(&cpuset);
+        out->cpus_afinidade = aff > 0 ? (i64)aff : out->cpus_logicas;
+    } else {
+        out->cpus_afinidade = out->cpus_logicas;
+    }
+
+    out->cpus_cgroup = -1;
+    out->mem_cgroup_limite_bytes = -1;
+    out->mem_cgroup_uso_bytes = -1;
+
+    char cg_rel[512];
+    if (ler_caminho_cgroup_v2(cg_rel, sizeof(cg_rel))) {
+        out->cpus_cgroup = ler_cgroup_v2_cpu_max(cg_rel);
+        ler_cgroup_v2_mem(cg_rel, &out->mem_cgroup_limite_bytes, &out->mem_cgroup_uso_bytes);
+    } else {
+        /* Fallback cgroups v1 */
+        char qbuf[64], pbuf[64];
+        if (ler_linha_arquivo("/sys/fs/cgroup/cpu/cpu.cfs_quota_us", qbuf, sizeof(qbuf)) &&
+            ler_linha_arquivo("/sys/fs/cgroup/cpu/cpu.cfs_period_us", pbuf, sizeof(pbuf))) {
+            long long q = strtoll(qbuf, NULL, 10);
+            long long p = strtoll(pbuf, NULL, 10);
+            if (q > 0 && p > 0) {
+                i64 c = (i64)((q + p - 1) / p);
+                out->cpus_cgroup = c > 0 ? c : 1;
+            }
+        }
+        if (ler_linha_arquivo("/sys/fs/cgroup/memory/memory.limit_in_bytes", qbuf, sizeof(qbuf))) {
+            long long lim = strtoll(qbuf, NULL, 10);
+            if (lim > 0 && lim < (1LL << 50)) {
+                out->mem_cgroup_limite_bytes = (i64)lim;
+                if (ler_linha_arquivo("/sys/fs/cgroup/memory/memory.usage_in_bytes", pbuf,
+                                      sizeof(pbuf))) {
+                    long long used = strtoll(pbuf, NULL, 10);
+                    if (used >= 0)
+                        out->mem_cgroup_uso_bytes = (i64)used;
+                }
+            }
+        }
+    }
+
+    i64 eff = out->cpus_logicas;
+    if (out->cpus_afinidade > 0 && out->cpus_afinidade < eff)
+        eff = out->cpus_afinidade;
+    if (out->cpus_cgroup > 0 && out->cpus_cgroup < eff)
+        eff = out->cpus_cgroup;
+    out->cpus_efetivas = eff > 0 ? eff : 1;
+
+    i64 total_kb = rt_ler_proc_kb("/proc/meminfo", "MemTotal:");
+    i64 avail_kb = rt_ler_proc_kb("/proc/meminfo", "MemAvailable:");
+    if (avail_kb < 0)
+        avail_kb = rt_ler_proc_kb("/proc/meminfo", "MemFree:");
+    out->mem_total_bytes = total_kb > 0 ? total_kb * 1024 : 0;
+    out->mem_disponivel_bytes = avail_kb > 0 ? avail_kb * 1024 : 0;
+
+    i64 eff_avail = out->mem_disponivel_bytes;
+    i64 eff_total = out->mem_total_bytes;
+    if (out->mem_cgroup_limite_bytes > 0) {
+        if (eff_total <= 0 || out->mem_cgroup_limite_bytes < eff_total)
+            eff_total = out->mem_cgroup_limite_bytes;
+        if (out->mem_cgroup_uso_bytes >= 0) {
+            i64 cg_avail = out->mem_cgroup_limite_bytes > out->mem_cgroup_uso_bytes
+                               ? out->mem_cgroup_limite_bytes - out->mem_cgroup_uso_bytes
+                               : 0;
+            if (eff_avail <= 0 || cg_avail < eff_avail)
+                eff_avail = cg_avail;
+        }
+    }
+    out->mem_efetiva_disponivel_bytes = eff_avail;
+    if (eff_total > 0) {
+        f64 used_ratio = 1.0 - ((f64)eff_avail / (f64)eff_total);
+        if (used_ratio < 0.0)
+            used_ratio = 0.0;
+        if (used_ratio > 1.0)
+            used_ratio = 1.0;
+        out->pressao_memoria = used_ratio;
+    }
+
+    struct rlimit rl;
+    if (getrlimit(RLIMIT_NPROC, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY)
+        out->limite_processos = (i64)rl.rlim_cur;
+    else
+        out->limite_processos = -1;
+}
+
+i64 rt_workers_recomendados(i64 mem_por_tarefa_bytes) {
+    rt_sistema_recursos r;
+    rt_detectar_recursos(&r);
+
+    /* Política conservadora: nunca saturar todos os núcleos lógicos por padrão. */
+    i64 w;
+    if (r.cpus_efetivas <= 2)
+        w = 1;
+    else if (r.cpus_efetivas <= 4)
+        w = 2;
+    else
+        w = r.cpus_efetivas / 2;
+
+    if (w > 8)
+        w = 8;
+
+    /* Redução adaptativa sob pressão ou escassez de memória. */
+    if (r.mem_efetiva_disponivel_bytes > 0) {
+        if (r.mem_efetiva_disponivel_bytes < (i64)(768LL * 1024LL * 1024LL) ||
+            r.pressao_memoria >= 0.88) {
+            w = 1;
+        } else if (r.mem_efetiva_disponivel_bytes < (i64)(1536LL * 1024LL * 1024LL) ||
+                   r.pressao_memoria >= 0.78) {
+            if (w > 2)
+                w = 2;
+        }
+        if (mem_por_tarefa_bytes > 0) {
+            i64 orcamento = r.mem_efetiva_disponivel_bytes / 2;
+            i64 max_por_mem = orcamento / mem_por_tarefa_bytes;
+            if (max_por_mem < 1)
+                max_por_mem = 1;
+            if (max_por_mem < w)
+                w = max_por_mem;
+        }
+    }
+    return w < 1 ? 1 : w;
+}
+
+delegua_value rt_recursos_para_mapa(const rt_sistema_recursos *r) {
+    delegua_value out = create_map();
+    item(out, "cpusLogicas", create_num(r->cpus_logicas));
+    item(out, "cpusAfinidade", create_num(r->cpus_afinidade));
+    item(out, "cpusCgroup", create_num(r->cpus_cgroup));
+    item(out, "cpusEfetivas", create_num(r->cpus_efetivas));
+    item(out, "totalBytes", create_num(r->mem_total_bytes));
+    item(out, "disponivelBytes", create_num(r->mem_disponivel_bytes));
+    item(out, "limiteCgroupBytes", create_num(r->mem_cgroup_limite_bytes));
+    item(out, "usoCgroupBytes", create_num(r->mem_cgroup_uso_bytes));
+    item(out, "efetivaDisponivelBytes", create_num(r->mem_efetiva_disponivel_bytes));
+    item(out, "limiteProcessos", create_num(r->limite_processos));
+    item(out, "pressao", create_real(r->pressao_memoria));
+    return out;
+}
+
+delegua_value delegua_ffi_sistemaRecursos(sz argc, delegua_value *argv) {
+    CHECK_ARGC(argc, 0);
+    (void)argv;
+    rt_sistema_recursos r;
+    rt_detectar_recursos(&r);
+    return rt_recursos_para_mapa(&r);
+}
+
+delegua_value delegua_ffi_sistemaMemoria(sz argc, delegua_value *argv) {
+    CHECK_ARGC(argc, 0);
+    (void)argv;
+    delegua_value out = create_map();
+    item(out, "rss_kb", create_num(rt_ler_proc_kb("/proc/self/status", "VmRSS:")));
+    item(out, "hwm_kb", create_num(rt_ler_proc_kb("/proc/self/status", "VmHWM:")));
+    item(out, "pss_kb", create_num(rt_ler_proc_kb("/proc/self/smaps_rollup", "Pss:")));
+    item(out, "gc_heap", create_num((i64)GC_get_heap_size()));
+    item(out, "gc_free", create_num((i64)GC_get_free_bytes()));
+    item(out, "gc_unmapped", create_num((i64)GC_get_unmapped_bytes()));
+    item(out, "gc_total", create_num((i64)GC_get_total_bytes()));
+    item(out, "gc_use", create_num((i64)GC_get_memory_use()));
+    item(out, "gc_cycles", create_num((i64)GC_get_gc_no()));
+    return out;
+}
+
+delegua_value delegua_ffi_sistemaColetarGC(sz argc, delegua_value *argv) {
+    CHECK_ARGC(argc, 1);
+    CHECK_ARG_TYPE(argv[0].type, DELEGUA_T_BOOL, 1);
+    if (argv[0].value.b1)
+        GC_gcollect_and_unmap();
+    else
+        GC_gcollect();
+    return create_nulo();
 }

@@ -52,11 +52,27 @@ delegua_value delegua_op_in(delegua_value needle, delegua_value container) {
     }
     if (container.type == DELEGUA_T_TEXT) {
         CHECK_ARG_TYPE(needle.type, DELEGUA_T_TEXT, 1);
-        if (needle.value.text.len > container.value.text.len)
+        sz nlen = needle.value.text.len;
+        sz clen = container.value.text.len;
+        if (nlen == 0)
+            return create_bool(true);
+        if (nlen > clen)
             return create_bool(false);
-        for (sz i = 0; i <= container.value.text.len - needle.value.text.len; ++i)
-            if (!memcmp(container.value.text.ptr + i, needle.value.text.ptr, needle.value.text.len))
+        const char *cptr = container.value.text.ptr;
+        const char *nptr = needle.value.text.ptr;
+        if (nlen == 1)
+            return create_bool(memchr(cptr, (unsigned char)nptr[0], clen) != NULL);
+        const char *pos = cptr;
+        const char *limit = cptr + (clen - nlen);
+        unsigned char first = (unsigned char)nptr[0];
+        while (pos <= limit) {
+            pos = memchr(pos, first, (sz)(limit - pos) + 1);
+            if (!pos)
+                return create_bool(false);
+            if (!memcmp(pos + 1, nptr + 1, nlen - 1))
                 return create_bool(true);
+            ++pos;
+        }
         return create_bool(false);
     }
     delegua_panic("O operador 'em' exige coleção ou texto.");

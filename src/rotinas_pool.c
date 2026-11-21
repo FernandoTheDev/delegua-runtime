@@ -1,14 +1,24 @@
 /* Copyright 2026 Fernando the Dev. SPDX-License-Identifier: Apache-2.0 */
+#define _POSIX_C_SOURCE 200809L
 #include "rotinas_pool.h"
 #include <errno.h>
 #include <pthread.h>
 #include <sys/eventfd.h>
+#include <time.h>
 #include <unistd.h>
+
+static uint64_t pool_now_ns(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+        return 0;
+    return (uint64_t)ts.tv_sec * UINT64_C(1000000000) + (uint64_t)ts.tv_nsec;
+}
 
 struct rt_pool_job {
     rt_pool *pool;
     rt_pool_job *next;
     rt_pool_fn run;
+    uint64_t submitted_ns;
     rt_pool_result result;
 };
 typedef struct {
@@ -18,8 +28,11 @@ struct rt_pool {
     pthread_mutex_t mutex;
     pthread_cond_t ready;
     pthread_t threads[64];
-    sz started, capacity, count;
+    sz started, capacity, count, next_slot;
+    sz queued, running, finished_pending;
     uint64_t last_id;
+    uint64_t submitted_total, completed_total, cancelled_total;
+    uint64_t queue_wait_ns_total, exec_ns_total;
     bool stopping;
     int fd;
     rt_pool_thread_hook on_enter, on_exit;
@@ -45,6 +58,7 @@ static void unlink_job(job_queue *queue, rt_pool_job *job, rt_pool_job *prev) {
 }
 static void finish(rt_pool *pool, rt_pool_job *job) {
     append(&pool->finished, job);
+    pool->finished_pending++;
     int rc;
     do {
         rc = eventfd_write(pool->fd, 1);
@@ -72,9 +86,19 @@ static void *worker(void *data) {
             break;
         rt_pool_job *job = pool->waiting.head;
         unlink_job(&pool->waiting, job, NULL);
+        pool->queued--;
+        pool->running++;
+        uint64_t started_ns = pool_now_ns();
+        uint64_t wait_ns = started_ns >= job->submitted_ns ? started_ns - job->submitted_ns : 0;
+        pool->queue_wait_ns_total += wait_ns;
         pthread_mutex_unlock(&pool->mutex);
         job->result.status = job->run(job, &job->result.packet);
+        uint64_t done_ns = pool_now_ns();
+        uint64_t exec_ns = done_ns >= started_ns ? done_ns - started_ns : 0;
         pthread_mutex_lock(&pool->mutex);
+        pool->running--;
+        pool->completed_total++;
+        pool->exec_ns_total += exec_ns;
         finish(pool, job);
     }
     pthread_mutex_unlock(&pool->mutex);
@@ -130,15 +154,20 @@ uint64_t rt_pool_submit_ctx(rt_pool *pool, rt_pool_fn run, void *ctx, rt_transfe
         pthread_mutex_unlock(&pool->mutex);
         return 0;
     }
-    sz i = 0;
-    while (pool->slots[i].result.id)
-        i++;
-    rt_pool_job *job = &pool->slots[i];
+    sz idx = pool->next_slot % pool->capacity;
+    while (pool->slots[idx].result.id)
+        idx = (idx + 1) % pool->capacity;
+    pool->next_slot = (idx + 1) % pool->capacity;
+    rt_pool_job *job = &pool->slots[idx];
     uint64_t id = ++pool->last_id;
-    *job =
-        (rt_pool_job){.pool = pool, .run = run, .result = {.id = id, .packet = packet, .ctx = ctx}};
+    *job = (rt_pool_job){.pool = pool,
+                         .run = run,
+                         .submitted_ns = pool_now_ns(),
+                         .result = {.id = id, .packet = packet, .ctx = ctx}};
     append(&pool->waiting, job);
     pool->count++;
+    pool->queued++;
+    pool->submitted_total++;
     pthread_cond_signal(&pool->ready);
     pthread_mutex_unlock(&pool->mutex);
     return id;
@@ -156,6 +185,8 @@ bool rt_pool_cancel(rt_pool *pool, uint64_t id) {
             goto done;
     for (sz i = 0; i < pool->capacity; i++)
         if (pool->slots[i].result.id == id) {
+            if (!pool->slots[i].result.cancelled)
+                pool->cancelled_total++;
             pool->slots[i].result.cancelled = true;
             found = true;
             break;
@@ -164,6 +195,7 @@ bool rt_pool_cancel(rt_pool *pool, uint64_t id) {
     for (rt_pool_job *job = pool->waiting.head; job; job = job->next) {
         if (job->result.id == id) {
             unlink_job(&pool->waiting, job, prev);
+            pool->queued--;
             finish(pool, job);
             break;
         }
@@ -188,6 +220,7 @@ bool rt_pool_take(rt_pool *pool, rt_pool_result *result) {
         if (rc < 0)
             abort();
         unlink_job(&pool->finished, job, NULL);
+        pool->finished_pending--;
         *result = job->result;
         job->result.id = 0;
         job->result.packet = NULL;
@@ -196,6 +229,25 @@ bool rt_pool_take(rt_pool *pool, rt_pool_result *result) {
     }
     pthread_mutex_unlock(&pool->mutex);
     return job != NULL;
+}
+void rt_pool_get_stats(rt_pool *pool, rt_pool_stats *out) {
+    if (!out)
+        return;
+    memset(out, 0, sizeof(*out));
+    if (!pool)
+        return;
+    pthread_mutex_lock(&pool->mutex);
+    out->workers = pool->started;
+    out->capacity = pool->capacity;
+    out->queued = pool->queued;
+    out->running = pool->running;
+    out->finished_pending = pool->finished_pending;
+    out->submitted_total = pool->submitted_total;
+    out->completed_total = pool->completed_total;
+    out->cancelled_total = pool->cancelled_total;
+    out->queue_wait_ns_total = pool->queue_wait_ns_total;
+    out->exec_ns_total = pool->exec_ns_total;
+    pthread_mutex_unlock(&pool->mutex);
 }
 void rt_pool_destroy(rt_pool *pool) {
     if (!pool)

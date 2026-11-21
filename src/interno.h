@@ -14,6 +14,35 @@ static inline void *rt_alloc(sz count, sz size) {
     return p;
 }
 
+static inline u64 rt_hash_bytes(const char *ptr, sz len) {
+    u64 h = 14695981039346656037ULL;
+    for (sz i = 0; i < len; ++i) {
+        h ^= (unsigned char)ptr[i];
+        h *= 1099511628211ULL;
+    }
+    return h;
+}
+
+static inline u64 rt_hash_cstr(const char *str, sz *out_len) {
+    u64 h = 14695981039346656037ULL;
+    const char *p = str;
+    while (*p) {
+        h ^= (unsigned char)*p++;
+        h *= 1099511628211ULL;
+    }
+    if (out_len)
+        *out_len = (sz)(p - str);
+    return h;
+}
+
+bool rt_map_try_get_cstr(delegua_value map, const char *key, sz len, u64 h, delegua_value *out);
+bool rt_map_contains_cstr(delegua_value map, const char *key, sz len, u64 h);
+delegua_value rt_map_set_cstr(delegua_value map, const char *key, sz len, u64 h,
+                              delegua_value value);
+delegua_value rt_text_char_at(delegua_value text, i64 index);
+delegua_value rt_chamar_metodo_padrao(delegua_value receiver, const char *name, sz argc,
+                                      delegua_value *argv);
+
 const char *rt_sistema_texto(delegua_value value, bool empty);
 u32 rt_utf8_next(delegua_value text, sz *offset);
 sz rt_text_count(delegua_value text);
@@ -43,4 +72,23 @@ void rt_error_record_origin(delegua_value error, const delegua_local *location);
 const delegua_local *rt_error_origin(delegua_value error);
 void rt_error_mark_cancelled(delegua_value error);
 bool rt_error_is_cancelled(delegua_value error);
+
+typedef struct rt_sistema_recursos {
+    i64 cpus_logicas;
+    i64 cpus_afinidade;
+    i64 cpus_cgroup;
+    i64 cpus_efetivas;
+    i64 mem_total_bytes;
+    i64 mem_disponivel_bytes;
+    i64 mem_cgroup_limite_bytes;
+    i64 mem_cgroup_uso_bytes;
+    i64 mem_efetiva_disponivel_bytes;
+    i64 limite_processos;
+    f64 pressao_memoria;
+} rt_sistema_recursos;
+
+void rt_detectar_recursos(rt_sistema_recursos *out);
+i64 rt_workers_recomendados(i64 mem_por_tarefa_bytes);
+delegua_value rt_recursos_para_mapa(const rt_sistema_recursos *r);
+i64 rt_ler_proc_kb(const char *path, const char *prefix);
 #endif

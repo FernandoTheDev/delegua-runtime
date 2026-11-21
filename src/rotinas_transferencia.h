@@ -1,6 +1,7 @@
 /* Copyright 2026 Fernando the Dev. SPDX-License-Identifier: Apache-2.0 */
 #ifndef CGD_ROTINAS_TRANSFERENCIA_H
 #define CGD_ROTINAS_TRANSFERENCIA_H
+#include "bytes_interno.h"
 #include "delegua_rt.h"
 
 /* Preparação interna das rotinas: não é uma ABI estrangeira da linguagem.
@@ -22,7 +23,9 @@ typedef enum {
     RT_TRANSFER_BOOL,
     RT_TRANSFER_INT,
     RT_TRANSFER_REAL,
-    RT_TRANSFER_TEXT
+    RT_TRANSFER_TEXT,
+    RT_TRANSFER_BYTES,
+    RT_TRANSFER_IMMUTABLE_BYTES
 } rt_transfer_kind;
 typedef struct {
     rt_transfer_kind kind;
@@ -34,6 +37,7 @@ typedef struct {
             const unsigned char *bytes;
             sz length;
         } text;
+        rt_shared_bytes *shared_bytes;
     } value;
 } rt_transfer_view;
 /* Falhas devolvem status e deixam *output NULL; nunca lançam Excecao.

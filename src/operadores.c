@@ -15,6 +15,7 @@
  * limitations under the License.
  */
 
+#define DELEGUA_OPERADORES_C
 #include "interno.h"
 
 delegua_value delegua_op_cast(delegua_value from, delegua_type to) {
@@ -214,7 +215,8 @@ delegua_value delegua_op_eq(delegua_value l, delegua_value r) {
         return create_bool(l.value.b1 == r.value.b1);
     case DELEGUA_T_TEXT:
         return create_bool(l.value.text.len == r.value.text.len &&
-                           memcmp(l.value.text.ptr, r.value.text.ptr, l.value.text.len) == 0);
+                           (l.value.text.ptr == r.value.text.ptr ||
+                            memcmp(l.value.text.ptr, r.value.text.ptr, l.value.text.len) == 0));
     default:
         return create_bool(l.type == DELEGUA_T_NULO || l.value.ptr == r.value.ptr);
     }

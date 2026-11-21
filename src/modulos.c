@@ -1,4 +1,25 @@
+#define _POSIX_C_SOURCE 200809L
 #include "interno.h"
+#include <pthread.h>
+
+static pthread_mutex_t mod_init_mutex;
+static pthread_once_t mod_init_once = PTHREAD_ONCE_INIT;
+
+static void init_mod_mutex(void) {
+    pthread_mutexattr_t attr;
+    pthread_mutexattr_init(&attr);
+    pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+    pthread_mutex_init(&mod_init_mutex, &attr);
+    pthread_mutexattr_destroy(&attr);
+}
+
+void delegua_mod_lock(void) {
+    pthread_once(&mod_init_once, init_mod_mutex);
+    pthread_mutex_lock(&mod_init_mutex);
+}
+
+void delegua_mod_unlock(void) { pthread_mutex_unlock(&mod_init_mutex); }
+
 typedef struct {
     delegua_value exports;
 } modulo;
@@ -12,13 +33,17 @@ delegua_value delegua_modulo_obter(delegua_value value, const char *name) {
     CHECK_ARG_TYPE(value.type, DELEGUA_T_MODULO, 1);
     CHECK_NULL(value.value.ptr);
     modulo *m = value.value.ptr;
-    delegua_value key = create_text(name);
-    if (!delegua_map_contem(m->exports, key))
+    sz len = strlen(name);
+    u64 h = rt_hash_bytes(name, len);
+    delegua_value out;
+    if (!rt_map_try_get_cstr(m->exports, name, len, h, &out))
         delegua_panicf("Exportação não encontrada: %s", name);
-    return delegua_map_obter(m->exports, key);
+    return out;
 }
 
 bool delegua_modulo_tem(delegua_value value, const char *name) {
     CHECK_ARG_TYPE(value.type, DELEGUA_T_MODULO, 1);
-    return delegua_map_contem(((modulo *)value.value.ptr)->exports, create_text(name));
+    sz len = strlen(name);
+    u64 h = rt_hash_bytes(name, len);
+    return rt_map_contains_cstr(((modulo *)value.value.ptr)->exports, name, len, h);
 }

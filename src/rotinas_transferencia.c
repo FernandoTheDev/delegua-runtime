@@ -1,8 +1,9 @@
 /* Copyright 2026 Fernando the Dev. SPDX-License-Identifier: Apache-2.0 */
 #include "rotinas_transferencia.h"
 
-/* Representação local, sem serializar ponteiros nem depender de aliasing de
- * delegua_value. offsets são validados antes de produzir qualquer view. */
+/* Representação local, sem serializar ponteiros para o heap do GC nem depender
+ * de aliasing de delegua_value. Offsets são validados antes de produzir views.
+ * Buffers Bytes congelados usam rt_shared_bytes (imutável, refcount atômico, zero-copy). */
 typedef struct {
     rt_transfer_kind kind;
     union {
@@ -12,13 +13,14 @@ typedef struct {
         struct {
             sz offset, length;
         } text;
+        rt_shared_bytes *shared_bytes;
     } value;
 } transfer_item;
 struct rt_transfer_packet {
     sz count, bytes;
     transfer_item items[];
 };
-enum { MAX_ITEMS = 4096, MAX_BYTES = 16 * 1024 * 1024 };
+enum { MAX_ITEMS = 4096, MAX_BYTES = DELEGUA_BYTES_MAX };
 
 rt_transfer_status rt_transfer_pack_views(sz count, const rt_transfer_view *values,
                                           rt_transfer_packet **output) {
@@ -38,11 +40,16 @@ rt_transfer_status rt_transfer_pack_views(sz count, const rt_transfer_view *valu
         case RT_TRANSFER_REAL:
             break;
         case RT_TRANSFER_TEXT:
+        case RT_TRANSFER_BYTES:
             if (values[i].value.text.length && !values[i].value.text.bytes)
                 return RT_TRANSFER_INVALID;
             if (values[i].value.text.length > MAX_BYTES - bytes)
                 return RT_TRANSFER_LIMIT;
             bytes += values[i].value.text.length;
+            break;
+        case RT_TRANSFER_IMMUTABLE_BYTES:
+            if (!values[i].value.shared_bytes)
+                return RT_TRANSFER_INVALID;
             break;
         default:
             return RT_TRANSFER_UNSUPPORTED;
@@ -73,7 +80,8 @@ rt_transfer_status rt_transfer_pack_views(sz count, const rt_transfer_view *valu
             item->value.real = values[i].value.real;
             break;
         case RT_TRANSFER_TEXT:
-            item->kind = RT_TRANSFER_TEXT;
+        case RT_TRANSFER_BYTES:
+            item->kind = values[i].kind;
             item->value.text.offset = offset;
             item->value.text.length = values[i].value.text.length;
             if (values[i].value.text.length)
@@ -81,8 +89,12 @@ rt_transfer_status rt_transfer_pack_views(sz count, const rt_transfer_view *valu
                        values[i].value.text.length);
             offset += values[i].value.text.length;
             break;
+        case RT_TRANSFER_IMMUTABLE_BYTES:
+            item->kind = RT_TRANSFER_IMMUTABLE_BYTES;
+            item->value.shared_bytes = rt_shared_bytes_retain(values[i].value.shared_bytes);
+            break;
         default:
-            free(packet);
+            rt_transfer_free(packet);
             return RT_TRANSFER_UNSUPPORTED;
         }
     }
@@ -125,6 +137,22 @@ rt_transfer_status rt_transfer_pack(sz count, const delegua_value *values,
             views[i].value.text.bytes = (const unsigned char *)values[i].value.text.ptr;
             views[i].value.text.length = values[i].value.text.len;
             break;
+        case DELEGUA_T_BYTES: {
+            const rt_bytes *b = values[i].value.ptr;
+            if (!b) {
+                free(views);
+                return RT_TRANSFER_INVALID;
+            }
+            if (b->immutable && b->shared) {
+                views[i].kind = RT_TRANSFER_IMMUTABLE_BYTES;
+                views[i].value.shared_bytes = b->shared;
+            } else {
+                views[i].kind = RT_TRANSFER_BYTES;
+                views[i].value.text.bytes = b->data;
+                views[i].value.text.length = b->len;
+            }
+            break;
+        }
         default:
             free(views);
             return RT_TRANSFER_UNSUPPORTED;
@@ -155,11 +183,17 @@ rt_transfer_status rt_transfer_get(const rt_transfer_packet *packet, sz index,
         output->value.real = item->value.real;
         break;
     case RT_TRANSFER_TEXT:
+    case RT_TRANSFER_BYTES:
         if (item->value.text.offset > packet->bytes ||
             item->value.text.length > packet->bytes - item->value.text.offset)
             return RT_TRANSFER_INVALID;
         output->value.text.bytes = (const unsigned char *)packet + item->value.text.offset;
         output->value.text.length = item->value.text.length;
+        break;
+    case RT_TRANSFER_IMMUTABLE_BYTES:
+        if (!item->value.shared_bytes)
+            return RT_TRANSFER_INVALID;
+        output->value.shared_bytes = item->value.shared_bytes;
         break;
     default:
         return RT_TRANSFER_INVALID;
@@ -186,6 +220,12 @@ delegua_value rt_transfer_materialize_at(const rt_transfer_packet *packet, sz i)
     case RT_TRANSFER_TEXT:
         value = create_text_len((const char *)view.value.text.bytes, view.value.text.length);
         break;
+    case RT_TRANSFER_BYTES:
+        value = rt_bytes_wrap_copy(view.value.text.bytes, view.value.text.length);
+        break;
+    case RT_TRANSFER_IMMUTABLE_BYTES:
+        value = rt_bytes_wrap_shared(view.value.shared_bytes);
+        break;
     }
     return value;
 }
@@ -199,4 +239,15 @@ delegua_value rt_transfer_materialize(const rt_transfer_packet *packet) {
     }
     return result;
 }
-void rt_transfer_free(rt_transfer_packet *packet) { free(packet); }
+void rt_transfer_free(rt_transfer_packet *packet) {
+    if (!packet)
+        return;
+    for (sz i = 0; i < packet->count; i++) {
+        if (packet->items[i].kind == RT_TRANSFER_IMMUTABLE_BYTES &&
+            packet->items[i].value.shared_bytes) {
+            rt_shared_bytes_release(packet->items[i].value.shared_bytes);
+            packet->items[i].value.shared_bytes = NULL;
+        }
+    }
+    free(packet);
+}

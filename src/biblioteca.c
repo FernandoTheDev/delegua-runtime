@@ -41,6 +41,13 @@ static delegua_value map_itens(sz argc, delegua_value *argv) {
 }
 static delegua_value map_limpar(sz argc, delegua_value *argv) {
     UNUSED();
+    if (argv[0].type == DELEGUA_T_VETOR) {
+        CHECK_NULL(argv[0].value.vetor);
+        argv[0].value.vetor->values = NULL;
+        argv[0].value.vetor->size = 0;
+        argv[0].value.vetor->cap = 0;
+        return argv[0];
+    }
     return delegua_map_limpar(argv[0]);
 }
 static delegua_value escrever(sz argc, delegua_value *argv) {
@@ -341,22 +348,81 @@ static delegua_value somar(sz argc, delegua_value *argv) {
 }
 static delegua_value juntar(sz argc, delegua_value *argv) {
     CHECK_ARG_TYPE(argv[0].type, DELEGUA_T_VETOR, 1);
-    delegua_value separator = argc > 1 ? argv[1] : create_text(",");
+    delegua_value separator = argc > 1 ? argv[1] : create_text_lit(",", 1);
     CHECK_ARG_TYPE(separator.type, DELEGUA_T_TEXT, 1);
-    delegua_value result = create_text("");
-    for (sz i = 0; i < argv[0].value.vetor->size; ++i) {
-        if (i)
-            result = create_text_concat(result, separator);
-        result = create_text_concat(result, delegua_para_texto(argv[0].value.vetor->values[i]));
+    sz count = argv[0].value.vetor->size;
+    if (count == 0)
+        return create_text_lit("", 0);
+    delegua_value *values = argv[0].value.vetor->values;
+    delegua_value stack_texts[64];
+    delegua_value *texts = count <= 64 ? stack_texts : rt_alloc(count, sizeof(*texts));
+    sz total = 0;
+    sz sep_len = separator.value.text.len;
+    for (sz i = 0; i < count; ++i) {
+        if (i) {
+            if (sep_len >= SIZE_MAX - total)
+                delegua_panic("Texto grande demais.");
+            total += sep_len;
+        }
+        texts[i] = values[i].type == DELEGUA_T_TEXT ? values[i] : delegua_para_texto(values[i]);
+        sz item_len = texts[i].value.text.len;
+        if (item_len >= SIZE_MAX - total)
+            delegua_panic("Texto grande demais.");
+        total += item_len;
     }
-    return result;
+    if (total == 0)
+        return create_text_lit("", 0);
+    if (total == 1) {
+        for (sz i = 0; i < count; ++i) {
+            if (i && sep_len == 1)
+                return create_text_len(separator.value.text.ptr, 1);
+            if (texts[i].value.text.len == 1)
+                return create_text_len(texts[i].value.text.ptr, 1);
+        }
+    }
+    char *out = GC_MALLOC_ATOMIC(total + 1);
+    CHECK_NULL(out);
+    sz offset = 0;
+    for (sz i = 0; i < count; ++i) {
+        if (i && sep_len) {
+            memcpy(out + offset, separator.value.text.ptr, sep_len);
+            offset += sep_len;
+        }
+        sz item_len = texts[i].value.text.len;
+        if (item_len) {
+            memcpy(out + offset, texts[i].value.text.ptr, item_len);
+            offset += item_len;
+        }
+    }
+    out[total] = '\0';
+    return (delegua_value){.type = DELEGUA_T_TEXT, .value.text.ptr = out, .value.text.len = total};
 }
 static delegua_value concatenar(sz argc, delegua_value *argv) {
     if (argv[0].type == DELEGUA_T_TEXT) {
-        delegua_value out = argv[0];
-        for (sz i = 1; i < argc; ++i)
-            out = create_text_concat(out, delegua_para_texto(argv[i]));
-        return out;
+        if (argc == 1)
+            return argv[0];
+        delegua_value stack_texts[32];
+        delegua_value *texts = argc <= 32 ? stack_texts : rt_alloc(argc, sizeof(*texts));
+        sz total = 0;
+        for (sz i = 0; i < argc; ++i) {
+            texts[i] = argv[i].type == DELEGUA_T_TEXT ? argv[i] : delegua_para_texto(argv[i]);
+            if (texts[i].value.text.len >= SIZE_MAX - total)
+                delegua_panic("Texto grande demais.");
+            total += texts[i].value.text.len;
+        }
+        char *out = GC_MALLOC_ATOMIC(total + 1);
+        CHECK_NULL(out);
+        sz offset = 0;
+        for (sz i = 0; i < argc; ++i) {
+            sz len = texts[i].value.text.len;
+            if (len) {
+                memcpy(out + offset, texts[i].value.text.ptr, len);
+                offset += len;
+            }
+        }
+        out[total] = '\0';
+        return (delegua_value){
+            .type = DELEGUA_T_TEXT, .value.text.ptr = out, .value.text.len = total};
     }
     CHECK_ARG_TYPE(argv[0].type, DELEGUA_T_VETOR, 1);
     delegua_value out = create_vetor();
@@ -398,12 +464,14 @@ static delegua_value encaixar(sz argc, delegua_value *argv) {
     if (needed > v->cap) {
         if (needed > SIZE_MAX / sizeof(*v->values))
             delegua_panic("Vetor grande demais.");
-        v->values = GC_REALLOC(v->values, needed * sizeof(*v->values));
+        v->values = v->values ? GC_REALLOC(v->values, needed * sizeof(*v->values))
+                              : GC_MALLOC(needed * sizeof(*v->values));
         CHECK_NULL(v->values);
         v->cap = needed;
     }
-    memmove(v->values + pos + extra, v->values + pos + remove,
-            (old_size - pos - remove) * sizeof(*v->values));
+    if (old_size > pos + remove)
+        memmove(v->values + pos + extra, v->values + pos + remove,
+                (old_size - pos - remove) * sizeof(*v->values));
     for (sz i = 0; i < extra; ++i)
         v->values[pos + i] = argv[3 + i];
     v->size = old_size - remove + extra;
@@ -565,8 +633,13 @@ delegua_value delegua_propriedade(delegua_value receiver, const char *name) {
         return delegua_modulo_obter(receiver, name);
     if (receiver.type == DELEGUA_T_OBJETO)
         return delegua_objeto_obter(receiver, name);
-    if (receiver.type == DELEGUA_T_MAP && delegua_map_contem(receiver, create_text(name)))
-        return delegua_map_obter(receiver, create_text(name));
+    if (receiver.type == DELEGUA_T_MAP) {
+        sz len = strlen(name);
+        u64 h = rt_hash_bytes(name, len);
+        delegua_value found;
+        if (rt_map_try_get_cstr(receiver, name, len, h, &found))
+            return found;
+    }
     if (receiver.type == DELEGUA_T_TUPLA) {
         const char *ordinais[] = {"primeiro", "segundo", "terceiro", "quarto", "quinto",
                                   "sexto",    "setimo",  "oitavo",   "nono",   "decimo"};
@@ -603,7 +676,8 @@ static bool method_allowed(delegua_value v, const char *name) {
     case DELEGUA_T_VETOR:
         allowed =
             "|adicionar|empilhar|tamanho|inclui|contem|contém|fatiar|mapear|filtrarPor|remover|"
-            "removerPrimeiro|removerUltimo|inverter|somar|juntar|concatenar|encaixar|ordenar|";
+            "removerPrimeiro|removerUltimo|inverter|somar|juntar|concatenar|encaixar|ordenar|"
+            "limpar|";
         break;
     case DELEGUA_T_TUPLA:
         allowed = "|tamanho|inclui|contem|contém|fatiar|";
@@ -642,6 +716,193 @@ delegua_value delegua_metodo_padrao(delegua_value receiver, const char *name) {
                     receiver);
     if (receiver.type == DELEGUA_T_MAP)
         return create_nulo();
+    delegua_panicf("Propriedade desconhecida: %s", name);
+    return create_nulo();
+}
+
+delegua_value delegua_conv_inteiro(delegua_value v) { return delegua_op_cast(v, DELEGUA_T_NUM); }
+delegua_value delegua_conv_real(delegua_value v) { return delegua_op_cast(v, DELEGUA_T_REAL); }
+
+delegua_value rt_chamar_metodo_padrao(delegua_value receiver, const char *name, sz argc,
+                                      delegua_value *argv) {
+    if (receiver.type == DELEGUA_T_VETOR) {
+        switch (name[0]) {
+        case 'e':
+            if (!strcmp(name, "empilhar") && argc == 1) {
+                delegua_value args[2] = {receiver, argv[0]};
+                return adicionar(2, args);
+            }
+            break;
+        case 't':
+            if (!strcmp(name, "tamanho") && argc == 0) {
+                sz n = receiver.value.vetor->size;
+                if (n > INT64_MAX)
+                    delegua_panic("Tamanho fora do intervalo.");
+                return create_num((i64)n);
+            }
+            break;
+        case 'a':
+            if (!strcmp(name, "adicionar") && argc == 1) {
+                delegua_value args[2] = {receiver, argv[0]};
+                return adicionar(2, args);
+            }
+            break;
+        case 'i':
+            if ((!strcmp(name, "inclui")) && argc == 1)
+                return delegua_op_in(argv[0], receiver);
+            break;
+        case 'c':
+            if ((!strcmp(name, "contem") || !strcmp(name, "contém")) && argc == 1)
+                return delegua_op_in(argv[0], receiver);
+            break;
+        case 'j':
+            if (!strcmp(name, "juntar") && argc <= 1) {
+                delegua_value args[2] = {receiver, argc ? argv[0] : create_nulo()};
+                return juntar(argc + 1, args);
+            }
+            break;
+        case 'f':
+            if (!strcmp(name, "fatiar") && argc >= 1 && argc <= 2)
+                return delegua_intervalo(receiver, argv[0], argc > 1 ? argv[1] : create_nulo(),
+                                         create_nulo());
+            break;
+        case 'r':
+            if (!strcmp(name, "removerUltimo") && argc == 0)
+                return remover_ultimo(1, &receiver);
+            if (!strcmp(name, "removerPrimeiro") && argc == 0)
+                return remover_primeiro(1, &receiver);
+            break;
+        case 'l':
+            if (!strcmp(name, "limpar") && argc == 0)
+                return map_limpar(1, &receiver);
+            break;
+        default:
+            break;
+        }
+    } else if (receiver.type == DELEGUA_T_TEXT) {
+        switch (name[0]) {
+        case 't':
+            if (!strcmp(name, "tamanho") && argc == 0) {
+                sz n = rt_text_count(receiver);
+                if (n > INT64_MAX)
+                    delegua_panic("Tamanho fora do intervalo.");
+                return create_num((i64)n);
+            }
+            break;
+        case 'f':
+            if (!strcmp(name, "fatiar") && argc >= 1 && argc <= 2)
+                return delegua_intervalo(receiver, argv[0], argc > 1 ? argv[1] : create_nulo(),
+                                         create_nulo());
+            break;
+        case 's':
+            if (!strcmp(name, "subtexto") && argc >= 1 && argc <= 2)
+                return delegua_intervalo(receiver, argv[0], argc > 1 ? argv[1] : create_nulo(),
+                                         create_nulo());
+            if (!strcmp(name, "substituir") && argc == 2)
+                return rt_text_replace(receiver, argv[0], argv[1]);
+            break;
+        case 'i':
+            if (!strcmp(name, "inclui") && argc == 1)
+                return delegua_op_in(argv[0], receiver);
+            break;
+        case 'c':
+            if ((!strcmp(name, "contem") || !strcmp(name, "contém")) && argc == 1)
+                return delegua_op_in(argv[0], receiver);
+            if (!strcmp(name, "concatenar")) {
+                delegua_value stack_args[16];
+                delegua_value *args = argc < 15 ? stack_args : rt_alloc(argc + 1, sizeof(*args));
+                args[0] = receiver;
+                if (argc)
+                    memcpy(args + 1, argv, argc * sizeof(*args));
+                return concatenar(argc + 1, args);
+            }
+            break;
+        case 'e':
+            if (!strcmp(name, "encontrar") && argc == 1)
+                return create_num(rt_text_find(receiver, argv[0]));
+            break;
+        case 'd':
+            if (!strcmp(name, "dividir") && argc == 1)
+                return rt_text_split(receiver, argv[0]);
+            break;
+        case 'a':
+            if (!strcmp(name, "aparar") && argc == 0)
+                return rt_text_trim(receiver, 0);
+            break;
+        default:
+            break;
+        }
+    } else if (receiver.type == DELEGUA_T_MODULO && delegua_modulo_tem(receiver, name))
+        return delegua_chamar(delegua_modulo_obter(receiver, name), argc, argv);
+    else if (receiver.type == DELEGUA_T_MAP) {
+        sz len;
+        u64 h = rt_hash_cstr(name, &len);
+        delegua_value found;
+        if (rt_map_try_get_cstr(receiver, name, len, h, &found))
+            return delegua_chamar(found, argc, argv);
+        switch (name[0]) {
+        case 'c':
+            if (!strcmp(name, "contemChave") && argc == 1)
+                return create_bool(delegua_map_contem(receiver, argv[0]));
+            if ((!strcmp(name, "contem") || !strcmp(name, "contém")) && argc == 1)
+                return delegua_op_in(argv[0], receiver);
+            if (!strcmp(name, "chaves") && argc == 0)
+                return delegua_map_listar(receiver, false);
+            break;
+        case 'o':
+            if (!strcmp(name, "obter") && argc >= 1 && argc <= 2)
+                return delegua_map_obter_padrao(receiver, argv[0],
+                                                argc > 1 ? argv[1] : create_nulo());
+            break;
+        case 'd':
+            if (!strcmp(name, "definir") && argc == 2)
+                return delegua_map_setar(receiver, argv[0], argv[1]);
+            break;
+        case 'i':
+            if (!strcmp(name, "inclui") && argc == 1)
+                return delegua_op_in(argv[0], receiver);
+            if (!strcmp(name, "itens") && argc == 0)
+                return delegua_map_itens(receiver);
+            break;
+        case 'v':
+            if (!strcmp(name, "valores") && argc == 0)
+                return delegua_map_listar(receiver, true);
+            break;
+        case 't':
+            if (!strcmp(name, "tamanho") && argc == 0) {
+                sz n = delegua_tamanho(receiver);
+                if (n > INT64_MAX)
+                    delegua_panic("Tamanho fora do intervalo.");
+                return create_num((i64)n);
+            }
+            break;
+        default:
+            break;
+        }
+    }
+    if (method_allowed(receiver, name)) {
+        for (sz i = 0; i < sizeof(metodos) / sizeof(*metodos); ++i) {
+            if (!strcmp(name, metodos[i].name)) {
+                if (argc < metodos[i].min || argc > metodos[i].max)
+                    delegua_panic("Quantidade de argumentos inválida.");
+                if (delegua_call_depth >= 1024)
+                    delegua_panic("Limite de recursão em execução excedido.");
+                if (argc == SIZE_MAX)
+                    delegua_panic("Argumentos demais.");
+                delegua_value stack_args[16];
+                delegua_value *args = argc < 15 ? stack_args : rt_alloc(argc + 1, sizeof(*args));
+                args[0] = receiver;
+                if (argc)
+                    memcpy(args + 1, argv, argc * sizeof(*args));
+                delegua_call_depth++;
+                delegua_value result = metodos[i].fn(argc + 1, args);
+                delegua_call_depth--;
+                return result;
+            }
+        }
+    }
+    if (receiver.type == DELEGUA_T_MAP)
+        return delegua_chamar(create_nulo(), argc, argv);
     delegua_panicf("Propriedade desconhecida: %s", name);
     return create_nulo();
 }

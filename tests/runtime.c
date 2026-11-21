@@ -192,6 +192,13 @@ void delegua_main(void) {
     REQUIRE(delegua_iterar(t, 1).value.num == 1);
     REQUIRE(delegua_iterar(m, 0).type == DELEGUA_T_TUPLA);
     REQUIRE(delegua_para_texto(create_nulo()).value.text.len == 4);
+    delegua_tipo *arr_txt = delegua_descr_array(delegua_descr_nome("texto"));
+    delegua_tipo *prom_txt = delegua_descr_promessa(delegua_descr_nome("texto"));
+    delegua_tipo *task_txt = delegua_descr_tarefa(delegua_descr_nome("texto"));
+    REQUIRE(arr_txt != prom_txt && arr_txt != task_txt && prom_txt != task_txt);
+    delegua_value txt_arr = create_vetor();
+    delegua_vetor_adicionar(&txt_arr, create_text("ok"));
+    REQUIRE(delegua_assegurar_descr_em(txt_arr, arr_txt, NULL).type == DELEGUA_T_VETOR);
     for (int i = 0; i < 1000; ++i) {
         f64 random = delegua_aleatorio().value.real;
         REQUIRE(random >= 0 && random < 1);
@@ -199,5 +206,56 @@ void delegua_main(void) {
         REQUIRE(bounded >= -3 && bounded < 4);
     }
     expansion_contracts();
+    {
+        /* Regressão Ciclo III: slots inline, inline caching monomórfico/polimórfico e invalidação */
+        delegua_value ca = create_classe("CA", create_nulo());
+        delegua_classe_fechada(ca);
+        delegua_classe_campo_tipo(ca, "x", delegua_descr_nome("inteiro"), 0);
+        delegua_classe_campo_tipo(ca, "nome", delegua_descr_nome("texto"), 0);
+        delegua_classe_metodo(ca, "obter", create_funcao(obter, 0));
+
+        delegua_value cb = create_classe("CB", ca);
+        delegua_classe_fechada(cb);
+        delegua_classe_campo_tipo(cb, "y", delegua_descr_nome("inteiro"), 0);
+
+        delegua_value ia = delegua_instanciar(ca, 0, NULL);
+        delegua_value ib = delegua_instanciar(cb, 0, NULL);
+        const void *ic_x = NULL;
+        const void *ic_set_x = NULL;
+        const void *ic_m = NULL;
+        delegua_def_ic(ia, "x", create_num(11), create_nulo(), &ic_set_x);
+        delegua_def_ic(ib, "x", create_num(22), create_nulo(), &ic_set_x);
+        REQUIRE(delegua_prop_ic(ia, "x", create_nulo(), &ic_x).value.num == 11);
+        REQUIRE(delegua_prop_ic(ib, "x", create_nulo(), &ic_x).value.num == 22);
+        REQUIRE(delegua_prop_ic(ia, "x", create_nulo(), &ic_x).value.num == 11);
+        delegua_value iclone = delegua_clonar(ib);
+        delegua_def_ic(iclone, "x", create_num(99), create_nulo(), &ic_set_x);
+        REQUIRE(delegua_prop_ic(ib, "x", create_nulo(), &ic_x).value.num == 22);
+        REQUIRE(delegua_prop_ic(iclone, "x", create_nulo(), &ic_x).value.num == 99);
+        delegua_objeto_setar(ia, "valor", create_num(77));
+        REQUIRE(delegua_chamar_ic(ia, "obter", create_nulo(), 0, NULL, &ic_m).value.num == 77);
+        REQUIRE(delegua_chamar_ic(ia, "obter", create_nulo(), 0, NULL, &ic_m).value.num == 77);
+        /* Invalidação dinâmica de layout após instanciação */
+        delegua_classe_campo_tipo(ca, "extra", delegua_descr_nome("inteiro"), 0);
+        delegua_value ia2 = delegua_instanciar(ca, 0, NULL);
+        delegua_def_ic(ia2, "extra", create_num(55), create_nulo(), &ic_set_x);
+        REQUIRE(delegua_prop_ic(ia2, "extra", create_nulo(), &ic_x).value.num == 55);
+        REQUIRE(delegua_prop_ic(ia, "x", create_nulo(), &ic_x).value.num == 11);
+        /* Vetor e mapa vazios preguiçosos + limpar */
+        delegua_value lv = create_vetor();
+        REQUIRE(delegua_tamanho(lv) == 0);
+        delegua_vetor_adicionar(&lv, create_num(123));
+        REQUIRE(delegua_tamanho(lv) == 1);
+        delegua_chamar_membro(lv, "limpar", create_nulo(), 0, NULL);
+        REQUIRE(delegua_tamanho(lv) == 0);
+        delegua_vetor_adicionar(&lv, create_num(456));
+        REQUIRE(delegua_vetor_obter(&lv, create_num(0)).value.num == 456);
+        delegua_value lm = create_map();
+        REQUIRE(!delegua_map_contem(lm, create_text("k")));
+        delegua_map_setar(lm, create_text("k"), create_num(8));
+        REQUIRE(delegua_map_obter(lm, create_text("k")).value.num == 8);
+        delegua_map_limpar(lm);
+        REQUIRE(delegua_tamanho(lm) == 0 && !delegua_map_contem(lm, create_text("k")));
+    }
     puts("Testes OK");
 }

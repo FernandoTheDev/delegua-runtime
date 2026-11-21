@@ -31,9 +31,21 @@
 #if defined(__GNUC__) || defined(__clang__)
 #define DELEGUA_NORETURN __attribute__((noreturn))
 #define DELEGUA_TLS __thread
+#define DELEGUA_LIKELY(x) __builtin_expect(!!(x), 1)
+#define DELEGUA_UNLIKELY(x) __builtin_expect(!!(x), 0)
+#define DELEGUA_ATOMIC_LOAD_PTR(p) __atomic_load_n((p), __ATOMIC_ACQUIRE)
+#define DELEGUA_ATOMIC_STORE_PTR(p, v) __atomic_store_n((p), (v), __ATOMIC_RELEASE)
+#define DELEGUA_ATOMIC_LOAD_INT(p) __atomic_load_n((p), __ATOMIC_ACQUIRE)
+#define DELEGUA_ATOMIC_STORE_INT(p, v) __atomic_store_n((p), (v), __ATOMIC_RELEASE)
 #else
 #define DELEGUA_NORETURN
 #define DELEGUA_TLS
+#define DELEGUA_LIKELY(x) (x)
+#define DELEGUA_UNLIKELY(x) (x)
+#define DELEGUA_ATOMIC_LOAD_PTR(p) (*(p))
+#define DELEGUA_ATOMIC_STORE_PTR(p, v) (*(p) = (v))
+#define DELEGUA_ATOMIC_LOAD_INT(p) (*(p))
+#define DELEGUA_ATOMIC_STORE_INT(p, v) (*(p) = (v))
 #endif
 #include <inttypes.h>
 #include <limits.h>
@@ -46,7 +58,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define VETOR_INIT_CAP 64
+#define VETOR_INIT_CAP 4
 #define DELEGUA_RT_REPO "https://github.com/FernandoTheDev/delegua-runtime"
 
 typedef int8_t i8;
@@ -121,6 +133,8 @@ enum delegua_type {
     DELEGUA_T_CANAL,
     DELEGUA_T_BYTES,
     DELEGUA_T_SQLITE,
+    DELEGUA_T_ARENA,
+    DELEGUA_T_ARENA_SLICE,
     DELEGUA_T_COUNT,
 };
 
@@ -140,7 +154,12 @@ typedef struct delegua_local {
     unsigned linha, coluna;
 } delegua_local;
 #define DELEGUA_ERRO_GENERICO "R0001"
+const delegua_local **delegua_local_atual_slot(void);
+#if !defined(__GNUC__) && !defined(__clang__)
+#define delegua_local_atual (*delegua_local_atual_slot())
+#else
 extern DELEGUA_TLS const delegua_local *delegua_local_atual;
+#endif
 extern DELEGUA_TLS const char *delegua_arquivo_atual;
 extern DELEGUA_TLS unsigned delegua_linha_atual, delegua_coluna_atual;
 void delegua_localizar(const char *arquivo, unsigned linha, unsigned coluna);
@@ -180,26 +199,40 @@ struct delegua_value {
 // funções auxiliares para criar cada tipo
 // //////////////////////////////////////////////////////////
 static inline delegua_value create_num(i64 num) {
-    return (delegua_value){.type = DELEGUA_T_NUM, .value.num = num};
+    return (delegua_value){.type = DELEGUA_T_NUM, .value = {.num = num}};
 }
 
 static inline delegua_value create_real(f64 real) {
-    return (delegua_value){.type = DELEGUA_T_REAL, .value.real = real};
+    return (delegua_value){.type = DELEGUA_T_REAL, .value = {.real = real}};
 }
 
 static inline delegua_value create_bool(bool b1) {
-    return (delegua_value){.type = DELEGUA_T_BOOL, .value.b1 = b1};
+    return (delegua_value){.type = DELEGUA_T_BOOL, .value = {.b1 = b1}};
+}
+
+extern const char delegua_single_byte_strs[256][2];
+
+static inline delegua_value create_text_lit(const char *ptr, sz len) {
+    return (delegua_value){.type = DELEGUA_T_TEXT,
+                           .value = {.text = {.ptr = ptr ? ptr : "", .len = len}}};
 }
 
 static inline delegua_value create_text_len(const char *ptr, sz len) {
     CHECK_NULL(ptr);
-    if (len == SIZE_MAX)
+    if (len == 0)
+        return (delegua_value){.type = DELEGUA_T_TEXT, .value = {.text = {.ptr = "", .len = 0}}};
+    if (len == 1)
+        return (delegua_value){
+            .type = DELEGUA_T_TEXT,
+            .value = {.text = {.ptr = delegua_single_byte_strs[(unsigned char)ptr[0]], .len = 1}},
+        };
+    if (len == ((sz)-1))
         delegua_panic("Texto grande demais.");
     char *str = GC_MALLOC_ATOMIC(len + 1);
     CHECK_NULL(str);
     memcpy(str, ptr, len);
     str[len] = '\0';
-    return (delegua_value){.type = DELEGUA_T_TEXT, .value.text.ptr = str, .value.text.len = len};
+    return (delegua_value){.type = DELEGUA_T_TEXT, .value = {.text = {.ptr = str, .len = len}}};
 }
 
 static inline delegua_value create_text(const char *ptr) {
@@ -210,7 +243,7 @@ static inline delegua_value create_text(const char *ptr) {
 static inline delegua_value create_text_concat(delegua_value l, delegua_value r) {
     CHECK_ARG_TYPE(l.type, DELEGUA_T_TEXT, 1);
     CHECK_ARG_TYPE(r.type, DELEGUA_T_TEXT, 2);
-    if (r.value.text.len >= SIZE_MAX - l.value.text.len)
+    if (r.value.text.len >= ((sz)-1) - l.value.text.len)
         delegua_panic("Texto grande demais.");
     sz size = l.value.text.len + r.value.text.len;
     sz l1 = l.value.text.len;
@@ -220,24 +253,19 @@ static inline delegua_value create_text_concat(delegua_value l, delegua_value r)
     memcpy(ptr, l.value.text.ptr, l1);
     memcpy(ptr + l1, r.value.text.ptr, l2);
     ptr[size] = '\0';
-    return (delegua_value){.type = DELEGUA_T_TEXT, .value.text.ptr = ptr, .value.text.len = size};
+    return (delegua_value){.type = DELEGUA_T_TEXT, .value = {.text = {.ptr = ptr, .len = size}}};
 }
 
 static inline delegua_value create_ptr(void *ptr) {
-    return (delegua_value){.type = DELEGUA_T_PTR, .value.ptr = ptr};
+    return (delegua_value){.type = DELEGUA_T_PTR, .value = {.ptr = ptr}};
 }
 
 static inline delegua_value create_vetor(void) {
-    delegua_value *values = GC_MALLOC(sizeof(delegua_value) * VETOR_INIT_CAP);
-    CHECK_NULL(values);
     delegua_vetor_data *data = GC_MALLOC(sizeof(delegua_vetor_data));
     CHECK_NULL(data);
-    data->cap = VETOR_INIT_CAP;
-    data->size = 0;
-    data->values = values;
     return (delegua_value){
         .type = DELEGUA_T_VETOR,
-        .value.vetor = data,
+        .value = {.vetor = data},
     };
 }
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -397,6 +425,10 @@ void delegua_classe_metodo_acesso(delegua_value c, const char *nome, delegua_val
 delegua_value delegua_propriedade_em(delegua_value v, const char *nome, delegua_value caller);
 delegua_value delegua_definir_em(delegua_value v, const char *nome, delegua_value valor,
                                  delegua_value caller);
+delegua_value delegua_prop_ic(delegua_value v, const char *nome, delegua_value caller,
+                              const void **ic);
+delegua_value delegua_def_ic(delegua_value v, const char *nome, delegua_value valor,
+                             delegua_value caller, const void **ic);
 delegua_value delegua_super_metodo(delegua_value c, delegua_value self, const char *nome);
 delegua_value delegua_assegurar_tipo(delegua_value v, const char *tipo);
 
@@ -415,6 +447,8 @@ delegua_value delegua_classe_objeto(void);
 bool delegua_tipo_compativel(delegua_value v, const char *type);
 delegua_value create_modulo(delegua_value exports);
 delegua_value delegua_modulo_obter(delegua_value module, const char *name);
+void delegua_mod_lock(void);
+void delegua_mod_unlock(void);
 
 delegua_value delegua_clonar(delegua_value v);
 delegua_value delegua_map_listar(delegua_value v, bool valores);
@@ -459,4 +493,240 @@ void delegua_classe_campo_estatico(delegua_value klass, const char *name, delegu
 void delegua_classe_mescla(delegua_value klass, delegua_value mixin);
 bool delegua_objeto_metodo_definido(delegua_value v, const char *name);
 void delegua_vetor_validar_elemento(delegua_value vector, delegua_value value);
+delegua_value delegua_chamar_membro(delegua_value receiver, const char *name, delegua_value caller,
+                                    sz argc, delegua_value *argv);
+delegua_value delegua_chamar_ic(delegua_value receiver, const char *name, delegua_value caller,
+                                sz argc, delegua_value *argv, const void **ic);
+delegua_value delegua_chamar_direto(delegua_native_fn fn, sz argc, delegua_value *argv);
+delegua_value delegua_conv_inteiro(delegua_value v);
+delegua_value delegua_conv_real(delegua_value v);
+static inline delegua_value delegua_tamanho_val(delegua_value v) {
+    sz n = delegua_tamanho(v);
+    if (DELEGUA_UNLIKELY(n > INT64_MAX))
+        delegua_panic("Tamanho fora do intervalo.");
+    return create_num((i64)n);
+}
+delegua_value delegua_assegurar_descr_em(delegua_value v, delegua_tipo *type,
+                                         const delegua_local *site);
+
+static inline delegua_value delegua_assegurar_inteiro(delegua_value v) {
+    if (DELEGUA_LIKELY(v.type == DELEGUA_T_NUM))
+        return v;
+    return delegua_assegurar_descr(v, delegua_descr_nome("inteiro"));
+}
+static inline delegua_value delegua_assegurar_inteiro_em(delegua_value v,
+                                                         const delegua_local *site) {
+    if (DELEGUA_LIKELY(v.type == DELEGUA_T_NUM))
+        return v;
+    if (site)
+        delegua_local_atual = site;
+    return delegua_assegurar_descr(v, delegua_descr_nome("inteiro"));
+}
+static inline delegua_value delegua_assegurar_numero_em(delegua_value v,
+                                                        const delegua_local *site) {
+    if (DELEGUA_LIKELY(v.type == DELEGUA_T_NUM || v.type == DELEGUA_T_REAL))
+        return v;
+    if (site)
+        delegua_local_atual = site;
+    return delegua_assegurar_descr(v, delegua_descr_nome("numero"));
+}
+static inline delegua_value delegua_assegurar_real(delegua_value v) {
+    if (DELEGUA_LIKELY(v.type == DELEGUA_T_REAL || v.type == DELEGUA_T_NUM))
+        return v;
+    return delegua_assegurar_descr(v, delegua_descr_nome("real"));
+}
+static inline delegua_value delegua_assegurar_real_em(delegua_value v, const delegua_local *site) {
+    if (DELEGUA_LIKELY(v.type == DELEGUA_T_REAL || v.type == DELEGUA_T_NUM))
+        return v;
+    if (site)
+        delegua_local_atual = site;
+    return delegua_assegurar_descr(v, delegua_descr_nome("real"));
+}
+static inline delegua_value delegua_assegurar_texto(delegua_value v) {
+    if (DELEGUA_LIKELY(v.type == DELEGUA_T_TEXT))
+        return v;
+    return delegua_assegurar_descr(v, delegua_descr_nome("texto"));
+}
+static inline delegua_value delegua_assegurar_texto_em(delegua_value v, const delegua_local *site) {
+    if (DELEGUA_LIKELY(v.type == DELEGUA_T_TEXT))
+        return v;
+    if (site)
+        delegua_local_atual = site;
+    return delegua_assegurar_descr(v, delegua_descr_nome("texto"));
+}
+static inline delegua_value delegua_assegurar_logico(delegua_value v) {
+    if (DELEGUA_LIKELY(v.type == DELEGUA_T_BOOL))
+        return v;
+    return delegua_assegurar_descr(v, delegua_descr_nome("logico"));
+}
+static inline delegua_value delegua_assegurar_logico_em(delegua_value v,
+                                                        const delegua_local *site) {
+    if (DELEGUA_LIKELY(v.type == DELEGUA_T_BOOL))
+        return v;
+    if (site)
+        delegua_local_atual = site;
+    return delegua_assegurar_descr(v, delegua_descr_nome("logico"));
+}
+static inline delegua_value delegua_assegurar_dicionario(delegua_value v) {
+    if (DELEGUA_LIKELY(v.type == DELEGUA_T_MAP))
+        return v;
+    return delegua_assegurar_descr(v, delegua_descr_nome("dicionario"));
+}
+static inline delegua_value delegua_assegurar_dicionario_em(delegua_value v,
+                                                            const delegua_local *site) {
+    if (DELEGUA_LIKELY(v.type == DELEGUA_T_MAP))
+        return v;
+    if (site)
+        delegua_local_atual = site;
+    return delegua_assegurar_descr(v, delegua_descr_nome("dicionario"));
+}
+static inline delegua_value delegua_assegurar_funcao(delegua_value v) {
+    if (DELEGUA_LIKELY(v.type == DELEGUA_T_FUNCAO))
+        return v;
+    return delegua_assegurar_descr(v, delegua_descr_nome("funcao"));
+}
+static inline delegua_value delegua_assegurar_funcao_em(delegua_value v,
+                                                        const delegua_local *site) {
+    if (DELEGUA_LIKELY(v.type == DELEGUA_T_FUNCAO))
+        return v;
+    if (site)
+        delegua_local_atual = site;
+    return delegua_assegurar_descr(v, delegua_descr_nome("funcao"));
+}
+static inline delegua_value delegua_assegurar_tupla_simples(delegua_value v) {
+    if (DELEGUA_LIKELY(v.type == DELEGUA_T_TUPLA))
+        return v;
+    return delegua_assegurar_descr(v, delegua_descr_nome("tupla"));
+}
+static inline delegua_value delegua_assegurar_tupla_simples_em(delegua_value v,
+                                                               const delegua_local *site) {
+    if (DELEGUA_LIKELY(v.type == DELEGUA_T_TUPLA))
+        return v;
+    if (site)
+        delegua_local_atual = site;
+    return delegua_assegurar_descr(v, delegua_descr_nome("tupla"));
+}
+static inline delegua_value delegua_assegurar_vazio(delegua_value v) {
+    if (DELEGUA_LIKELY(v.type == DELEGUA_T_NULO))
+        return v;
+    return delegua_assegurar_descr(v, delegua_descr_nome("vazio"));
+}
+static inline delegua_value delegua_assegurar_vazio_em(delegua_value v, const delegua_local *site) {
+    if (DELEGUA_LIKELY(v.type == DELEGUA_T_NULO))
+        return v;
+    if (site)
+        delegua_local_atual = site;
+    return delegua_assegurar_descr(v, delegua_descr_nome("vazio"));
+}
+
+#if (defined(__GNUC__) || defined(__clang__)) && !defined(DELEGUA_OPERADORES_C)
+static inline delegua_value delegua_fast_op_add(delegua_value l, delegua_value r) {
+    if (__builtin_expect(l.type == DELEGUA_T_NUM && r.type == DELEGUA_T_NUM, 1)) {
+        i64 res;
+        if (__builtin_expect(!__builtin_add_overflow(l.value.num, r.value.num, &res), 1))
+            return create_num(res);
+    }
+    return (delegua_op_add)(l, r);
+}
+static inline delegua_value delegua_fast_op_sub(delegua_value l, delegua_value r) {
+    if (__builtin_expect(l.type == DELEGUA_T_NUM && r.type == DELEGUA_T_NUM, 1)) {
+        i64 res;
+        if (__builtin_expect(!__builtin_sub_overflow(l.value.num, r.value.num, &res), 1))
+            return create_num(res);
+    }
+    return (delegua_op_sub)(l, r);
+}
+static inline delegua_value delegua_fast_op_mul(delegua_value l, delegua_value r) {
+    if (__builtin_expect(l.type == DELEGUA_T_NUM && r.type == DELEGUA_T_NUM, 1)) {
+        i64 res;
+        if (__builtin_expect(!__builtin_mul_overflow(l.value.num, r.value.num, &res), 1))
+            return create_num(res);
+    }
+    return (delegua_op_mul)(l, r);
+}
+static inline delegua_value delegua_fast_op_lt(delegua_value l, delegua_value r) {
+    if (__builtin_expect(l.type == DELEGUA_T_NUM && r.type == DELEGUA_T_NUM, 1))
+        return create_bool(l.value.num < r.value.num);
+    return (delegua_op_lt)(l, r);
+}
+static inline delegua_value delegua_fast_op_le(delegua_value l, delegua_value r) {
+    if (__builtin_expect(l.type == DELEGUA_T_NUM && r.type == DELEGUA_T_NUM, 1))
+        return create_bool(l.value.num <= r.value.num);
+    return (delegua_op_le)(l, r);
+}
+static inline delegua_value delegua_fast_op_gt(delegua_value l, delegua_value r) {
+    if (__builtin_expect(l.type == DELEGUA_T_NUM && r.type == DELEGUA_T_NUM, 1))
+        return create_bool(l.value.num > r.value.num);
+    return (delegua_op_gt)(l, r);
+}
+static inline delegua_value delegua_fast_op_ge(delegua_value l, delegua_value r) {
+    if (__builtin_expect(l.type == DELEGUA_T_NUM && r.type == DELEGUA_T_NUM, 1))
+        return create_bool(l.value.num >= r.value.num);
+    return (delegua_op_ge)(l, r);
+}
+static inline delegua_value delegua_fast_op_eq(delegua_value l, delegua_value r) {
+    if (__builtin_expect(l.type == DELEGUA_T_NUM && r.type == DELEGUA_T_NUM, 1))
+        return create_bool(l.value.num == r.value.num);
+    return (delegua_op_eq)(l, r);
+}
+static inline delegua_value delegua_fast_op_neq(delegua_value l, delegua_value r) {
+    if (__builtin_expect(l.type == DELEGUA_T_NUM && r.type == DELEGUA_T_NUM, 1))
+        return create_bool(l.value.num != r.value.num);
+    return (delegua_op_neq)(l, r);
+}
+static inline delegua_value delegua_fast_op_bor(delegua_value l, delegua_value r) {
+    if (__builtin_expect(l.type == DELEGUA_T_NUM && r.type == DELEGUA_T_NUM, 1))
+        return create_num(l.value.num | r.value.num);
+    return (delegua_op_bor)(l, r);
+}
+static inline delegua_value delegua_fast_op_bnd(delegua_value l, delegua_value r) {
+    if (__builtin_expect(l.type == DELEGUA_T_NUM && r.type == DELEGUA_T_NUM, 1))
+        return create_num(l.value.num & r.value.num);
+    return (delegua_op_bnd)(l, r);
+}
+static inline delegua_value delegua_fast_op_bxr(delegua_value l, delegua_value r) {
+    if (__builtin_expect(l.type == DELEGUA_T_NUM && r.type == DELEGUA_T_NUM, 1))
+        return create_num(l.value.num ^ r.value.num);
+    return (delegua_op_bxr)(l, r);
+}
+static inline delegua_value delegua_fast_op_shl(delegua_value l, delegua_value r) {
+    if (__builtin_expect(l.type == DELEGUA_T_NUM && r.type == DELEGUA_T_NUM && r.value.num >= 0 &&
+                             r.value.num < 64,
+                         1)) {
+        u64 bits = (u64)l.value.num << (u64)r.value.num;
+        i64 res;
+        memcpy(&res, &bits, sizeof(res));
+        return create_num(res);
+    }
+    return (delegua_op_shl)(l, r);
+}
+static inline delegua_value delegua_fast_op_shr(delegua_value l, delegua_value r) {
+    if (__builtin_expect(l.type == DELEGUA_T_NUM && r.type == DELEGUA_T_NUM && r.value.num >= 0 &&
+                             r.value.num < 64,
+                         1))
+        return create_num(l.value.num >> r.value.num);
+    return (delegua_op_shr)(l, r);
+}
+static inline bool delegua_fast_is_truthy(delegua_value val) {
+    if (__builtin_expect((unsigned)val.type >= DELEGUA_T_COUNT, 0))
+        return (delegua_is_truthy)(val);
+    return val.type != DELEGUA_T_NULO && (val.type != DELEGUA_T_BOOL || val.value.b1);
+}
+
+#define delegua_op_add delegua_fast_op_add
+#define delegua_op_sub delegua_fast_op_sub
+#define delegua_op_mul delegua_fast_op_mul
+#define delegua_op_lt delegua_fast_op_lt
+#define delegua_op_le delegua_fast_op_le
+#define delegua_op_gt delegua_fast_op_gt
+#define delegua_op_ge delegua_fast_op_ge
+#define delegua_op_eq delegua_fast_op_eq
+#define delegua_op_neq delegua_fast_op_neq
+#define delegua_op_bor delegua_fast_op_bor
+#define delegua_op_bnd delegua_fast_op_bnd
+#define delegua_op_bxr delegua_fast_op_bxr
+#define delegua_op_shl delegua_fast_op_shl
+#define delegua_op_shr delegua_fast_op_shr
+#define delegua_is_truthy delegua_fast_is_truthy
+#endif
 #endif

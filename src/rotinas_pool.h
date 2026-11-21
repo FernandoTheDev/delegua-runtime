@@ -20,6 +20,19 @@ typedef struct {
     void *ctx;
 } rt_pool_result;
 
+typedef struct {
+    sz workers;
+    sz capacity;
+    sz queued;
+    sz running;
+    sz finished_pending;
+    uint64_t submitted_total;
+    uint64_t completed_total;
+    uint64_t cancelled_total;
+    uint64_t queue_wait_ns_total;
+    uint64_t exec_ns_total;
+} rt_pool_stats;
+
 /* Demais operações são exclusivas da thread principal. Capacidade inclui
  * conclusões ainda não consumidas. Zero na submissão preserva o pacote. */
 rt_pool *rt_pool_create(sz workers, sz capacity);
@@ -32,5 +45,6 @@ bool rt_pool_cancel(rt_pool *pool, uint64_t id);
  * Em sucesso, o consumidor deve liberar o pacote retornado. */
 int rt_pool_fd(const rt_pool *pool);
 bool rt_pool_take(rt_pool *pool, rt_pool_result *result);
+void rt_pool_get_stats(rt_pool *pool, rt_pool_stats *out);
 void rt_pool_destroy(rt_pool *pool);
 #endif
