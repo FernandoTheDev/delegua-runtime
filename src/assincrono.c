@@ -71,8 +71,10 @@ rt_async_loop *rt_async_create(rt_async_limits limits) {
     rt_async_loop *loop = rt_alloc(1, sizeof(*loop));
     loop->limits = limits;
     loop->next = loops;
-    if (loops)
+    if (loops) {
         loops->previous = loop;
+        cgd_gc_write_barrier_ptr(loops, loop);
+    }
     loops = loop;
     return loop;
 }
@@ -90,16 +92,22 @@ static void reserve_reaction(rt_async_loop *loop) {
 
 static rt_promise *register_promise(rt_async_loop *loop, rt_promise *promise) {
     promise->loop = loop;
+    cgd_gc_write_barrier_ptr(promise, loop);
     promise->sequence = ++loop->sequence;
     promise->result = create_nulo();
     promise->state = RT_PROMISE_PENDING;
     promise->registered = true;
     promise->previous = loop->tail;
-    if (loop->tail)
+    cgd_gc_write_barrier_ptr(promise, loop->tail);
+    if (loop->tail) {
         loop->tail->next = promise;
-    else
+        cgd_gc_write_barrier_ptr(loop->tail, promise);
+    } else {
         loop->head = promise;
+        cgd_gc_write_barrier_ptr(loop, promise);
+    }
     loop->tail = promise;
+    cgd_gc_write_barrier_ptr(loop, promise);
     loop->registered++;
     loop->pending++;
     return promise;
@@ -114,14 +122,20 @@ static void unregister_promise(rt_promise *promise) {
     if (!promise->registered)
         return;
     rt_async_loop *loop = promise->loop;
-    if (promise->previous)
+    if (promise->previous) {
         promise->previous->next = promise->next;
-    else
+        cgd_gc_write_barrier_ptr(promise->previous, promise->next);
+    } else {
         loop->head = promise->next;
-    if (promise->next)
+        cgd_gc_write_barrier_ptr(loop, promise->next);
+    }
+    if (promise->next) {
         promise->next->previous = promise->previous;
-    else
+        cgd_gc_write_barrier_ptr(promise->next, promise->previous);
+    } else {
         loop->tail = promise->previous;
+        cgd_gc_write_barrier_ptr(loop, promise->previous);
+    }
     promise->previous = promise->next = NULL;
     promise->registered = false;
     loop->registered--;
@@ -136,27 +150,37 @@ static void observe(rt_promise *promise) {
 static void enqueue(rt_async_loop *loop, rt_reaction *reaction) {
     reaction->next = NULL;
     reaction->queued = true;
-    if (loop->ready_tail)
+    if (loop->ready_tail) {
         loop->ready_tail->next = reaction;
-    else
+        cgd_gc_write_barrier_ptr(loop->ready_tail, reaction);
+    } else {
         loop->ready_head = reaction;
+        cgd_gc_write_barrier_ptr(loop, reaction);
+    }
     loop->ready_tail = reaction;
+    cgd_gc_write_barrier_ptr(loop, reaction);
 }
 
 static void attach(rt_promise *source, rt_reaction *reaction) {
     source->loop->reactions++;
     reaction->source = source;
+    cgd_gc_write_barrier_ptr(reaction, source);
     reaction->target->subscription = reaction;
+    cgd_gc_write_barrier_ptr(reaction->target, reaction);
     source->observers++;
     observe(source);
     if (source->state != RT_PROMISE_PENDING) {
         enqueue(source->loop, reaction);
     } else {
-        if (source->tail)
+        if (source->tail) {
             source->tail->next = reaction;
-        else
+            cgd_gc_write_barrier_ptr(source->tail, reaction);
+        } else {
             source->head = reaction;
+            cgd_gc_write_barrier_ptr(source, reaction);
+        }
         source->tail = reaction;
+        cgd_gc_write_barrier_ptr(source, reaction);
     }
 }
 
@@ -179,6 +203,7 @@ static void settle(rt_promise *promise, rt_promise_state volatile state,
     promise->cancel_data = NULL;
     promise->state = state;
     promise->result = value;
+    cgd_gc_write_barrier_val(promise, value);
     promise->has_error_location = location != NULL;
     promise->has_error_origin = location != NULL;
     if (location) {
@@ -249,9 +274,11 @@ bool rt_promise_adopt(rt_promise *promise, rt_promise *source) {
     reserve_reaction(promise->loop);
     rt_reaction *reaction = rt_alloc(1, sizeof(*reaction));
     reaction->target = promise;
+    cgd_gc_write_barrier_ptr(reaction, promise);
     reaction->adoption = true;
     promise->locked = true;
     promise->adopting = source;
+    cgd_gc_write_barrier_ptr(promise, source);
     attach(source, reaction);
     return true;
 }
@@ -266,9 +293,11 @@ rt_promise *rt_promise_then(rt_promise *source, rt_async_callback fulfilled,
     rt_reaction *reaction = rt_alloc(1, sizeof(*reaction));
     rt_promise *target = rt_alloc(1, sizeof(*target));
     reaction->target = target;
+    cgd_gc_write_barrier_ptr(reaction, target);
     reaction->fulfilled = fulfilled;
     reaction->rejected = rejected;
     reaction->userdata = userdata;
+    cgd_gc_write_barrier_ptr(reaction, userdata);
     register_promise(loop, target);
     attach(source, reaction);
     return target;
@@ -276,6 +305,7 @@ rt_promise *rt_promise_then(rt_promise *source, rt_async_callback fulfilled,
 
 static void preserve_origin(rt_promise *target, const rt_promise *source) {
     target->trace = source->trace;
+    cgd_gc_write_barrier_ptr(target, source->trace);
     target->trace_truncated = source->trace_truncated;
     target->has_error_origin = source->has_error_origin;
     if (source->has_error_origin)
@@ -451,6 +481,7 @@ void rt_promise_set_cancel(rt_promise *promise, void (*cancel)(void *), void *da
         delegua_panic("Proprietário de cancelamento inválido.");
     promise->cancel = cancel;
     promise->cancel_data = data;
+    cgd_gc_write_barrier_ptr(promise, data);
 }
 bool rt_promise_cancel(rt_promise *promise) {
     check_promise(promise);
@@ -471,16 +502,24 @@ static void restore_rejection_root(rt_promise *promise) {
     }
     promise->previous = previous;
     promise->next = next;
+    cgd_gc_write_barrier_ptr(promise, previous);
+    cgd_gc_write_barrier_ptr(promise, next);
     promise->registered = true;
     loop->registered++;
-    if (previous)
+    if (previous) {
         previous->next = promise;
-    else
+        cgd_gc_write_barrier_ptr(previous, promise);
+    } else {
         loop->head = promise;
-    if (next)
+        cgd_gc_write_barrier_ptr(loop, promise);
+    }
+    if (next) {
         next->previous = promise;
-    else
+        cgd_gc_write_barrier_ptr(next, promise);
+    } else {
         loop->tail = promise;
+        cgd_gc_write_barrier_ptr(loop, promise);
+    }
 }
 static void unsubscribe(rt_promise *target) {
     rt_reaction *reaction = target ? target->subscription : NULL;
@@ -544,7 +583,10 @@ void rt_promise_add_type(rt_promise *promise, delegua_tipo *type) {
     rt_promise_type *entry = rt_alloc(1, sizeof(*entry));
     entry->type = type;
     entry->next = promise->types;
+    cgd_gc_write_barrier_ptr(entry, type);
+    cgd_gc_write_barrier_ptr(entry, entry->next);
     promise->types = entry;
+    cgd_gc_write_barrier_ptr(promise, entry);
 }
 
 struct rt_task {
@@ -564,6 +606,7 @@ struct rt_task {
 };
 static rt_async_loop *program_loop;
 static rt_task *current_task;
+static delegua_value promise_klass;
 static bool shutting_down;
 static void request_task_cancel(void *userdata);
 static void deliver_task_cancel(void *userdata);
@@ -628,8 +671,10 @@ static void run_task(rt_task *task, sz argc, delegua_value *argv) {
                 unsigned trace_depth = task->input_trace ? task->input_trace->depth : 0;
                 if (trace_depth < MAX_AWAIT_SITES) {
                     task->site->previous = task->input_trace;
+                    cgd_gc_write_barrier_ptr(task->site, task->input_trace);
                     task->site->depth = trace_depth + 1;
                     task->output->trace = task->site;
+                    cgd_gc_write_barrier_ptr(task->output, task->site);
                 } else
                     task->output->trace_truncated = true;
             }
@@ -642,6 +687,8 @@ static void run_task(rt_task *task, sz argc, delegua_value *argv) {
     if (task->finished) {
         task->frame = NULL;
         task->input = create_nulo();
+    } else if (task->frame) {
+        cgd_gc_dirty_object(task->frame);
     }
     delegua_local_atual = saved;
     delegua_arquivo_atual = file;
@@ -659,6 +706,7 @@ static rt_async_result resume_task(void *userdata, delegua_value value, bool rej
         delegua_panic("Continuação assíncrona inválida.");
     const delegua_local *origin = rejected ? rt_promise_error_origin(task->awaited) : NULL;
     task->input_trace = rejected ? task->awaited->trace : NULL;
+    cgd_gc_write_barrier_ptr(task, task->input_trace);
     task->input_truncated = rejected && task->awaited->trace_truncated;
     task->has_input_origin = origin != NULL;
     if (origin)
@@ -667,6 +715,7 @@ static rt_async_result resume_task(void *userdata, delegua_value value, bool rej
     task->waiter = NULL;
     task->waiting = false;
     task->input = value;
+    cgd_gc_write_barrier_val(task, value);
     task->input_failed = rejected;
     run_task(task, 0, NULL);
     return (rt_async_result){create_nulo(), NULL};
@@ -693,11 +742,13 @@ void rt_task_await(rt_task *task, delegua_value promise) {
         delegua_falhar(task->cancel_error);
     }
     task->waiter = rt_promise_then(promise.value.ptr, resume_success, resume_failure, task);
+    cgd_gc_write_barrier_ptr(task, task->waiter);
     task->site->location =
         delegua_local_atual
             ? *delegua_local_atual
             : (delegua_local){delegua_arquivo_atual, delegua_linha_atual, delegua_coluna_atual};
     task->awaited = promise.value.ptr;
+    cgd_gc_write_barrier_ptr(task, task->awaited);
     task->waiting = true;
 }
 delegua_value rt_task_input(rt_task *task) {
@@ -944,10 +995,14 @@ static rt_async_result group_accept(void *userdata, delegua_value value, bool re
                               create_text(rejected ? "rejeitada" : "resolvida"));
             delegua_map_setar(result, create_text(rejected ? "erro" : "valor"), value);
             group->values.value.vetor->values[input->index] = result;
-        } else if (rejected)
+            cgd_gc_write_barrier_val(&group->values.value.vetor->values[input->index], result);
+        } else if (rejected) {
             group->errors.value.vetor->values[input->index] = value;
-        else
+            cgd_gc_write_barrier_val(&group->errors.value.vetor->values[input->index], value);
+        } else {
             group->values.value.vetor->values[input->index] = value;
+            cgd_gc_write_barrier_val(&group->values.value.vetor->values[input->index], value);
+        }
         if (!group->remaining) {
             if (group->mode == 2)
                 group_finish(group, aggregate_failure(group), true);
@@ -1054,19 +1109,19 @@ static delegua_value promise_settled(sz argc, delegua_value *argv) {
     return promise_combine(argc, argv, 3);
 }
 delegua_value rt_async_promise_class(void) {
-    static delegua_value klass;
-    if (klass.type != DELEGUA_T_CLASSE) {
-        klass = create_classe("Promessa", create_nulo());
-        delegua_classe_abstrata(klass);
-        delegua_classe_fechada(klass);
+    if (promise_klass.type != DELEGUA_T_CLASSE) {
+        promise_klass = create_classe("Promessa", create_nulo());
+        delegua_classe_abstrata(promise_klass);
+        delegua_classe_fechada(promise_klass);
         const char *names[] = {"resolvida", "rejeitada", "todas",
                                "corrida",   "qualquer",  "todasResolvidas"};
         delegua_native_fn methods[] = {promise_resolved, promise_rejected, promise_all,
                                        promise_race,     promise_any,      promise_settled};
         for (sz i = 0; i < sizeof(names) / sizeof(*names); i++)
-            delegua_classe_metodo_estatico(klass, names[i], create_funcao(methods[i], 1), 0);
+            delegua_classe_metodo_estatico(promise_klass, names[i], create_funcao(methods[i], 1),
+                                           0);
     }
-    return klass;
+    return promise_klass;
 }
 
 /* Marcar as dependências de limpezas já suspensas antes de cancelar o resto. */
@@ -1133,4 +1188,23 @@ int rt_async_program_abort(delegua_value error) {
     delegua_value message = delegua_objeto_obter(error, "mensagem");
     delegua_renderizar_erro(stderr, message.value.text.ptr, message.value.text.len);
     return EXIT_FAILURE;
+}
+
+void rt_gc_scan_assincrono(cgd_gc_visit_fn visit_ptr,
+                           void (*visit_val)(const delegua_value *v, void *ctx), void *gc_ctx) {
+    if (visit_ptr) {
+        if (loops)
+            visit_ptr(loops, gc_ctx);
+        if (program_loop)
+            visit_ptr(program_loop, gc_ctx);
+        if (current_task) {
+            visit_ptr(current_task, gc_ctx);
+            if (current_task->frame) {
+                visit_ptr(current_task->frame, gc_ctx);
+                cgd_gc_dirty_object(current_task->frame);
+            }
+        }
+    }
+    if (visit_val && promise_klass.type == DELEGUA_T_CLASSE)
+        visit_val(&promise_klass, gc_ctx);
 }

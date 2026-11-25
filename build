@@ -2,8 +2,8 @@
 set -e
 
 CC=${CC:-clang}
-SRC="src/delegua_rt.c"
 TARGET="o"
+CGD_BUILD_BOEHM=${CGD_BUILD_BOEHM:-1}
 
 if ! command -v "$CC" >/dev/null 2>&1; then
     echo "Erro: Compilador '$CC' não encontrado." >&2
@@ -13,14 +13,6 @@ fi
 
 if ! command -v pkg-config >/dev/null 2>&1; then
     echo "Erro: 'pkg-config' não encontrado. É necessário para achar as bibliotecas." >&2
-    exit 1
-fi
-
-if ! pkg-config --exists bdw-gc; then
-    echo "Erro: Biblioteca 'bdw-gc' (Boehm GC) não encontrada pelo pkg-config." >&2
-    echo "Dica de instalação:" >&2
-    echo "  Ubuntu/Debian: sudo apt install libgc-dev" >&2
-    echo "  Arch Linux:    sudo pacman -S gc" >&2
     exit 1
 fi
 
@@ -38,24 +30,59 @@ while [ "$#" -gt 0 ]; do
 done
 
 RT_OPT=${RT_OPT:--O2}
-CFLAGS="-std=c99 -Wall -Wextra -Werror -pedantic -Wconversion -Wshadow -fPIC ${RT_OPT} -g ${CFLAGS:-} $(pkg-config --cflags bdw-gc libcurl)"
-mkdir -p .build
+USER_CFLAGS=${CFLAGS:-}
 if ! pkg-config --atleast-version=7.86.0 libcurl; then
     echo "libcurl >= 7.86.0 é necessária." >&2
     exit 1
 fi
+CURL_CFLAGS="$(pkg-config --cflags libcurl)"
+BASE_CFLAGS="-std=c99 -Wall -Wextra -Werror -pedantic -Wconversion -Wshadow -fPIC ${RT_OPT} -g ${USER_CFLAGS} ${CURL_CFLAGS}"
+
+mkdir -p .build .build/cgd
+rm -f .build/cgd/*.o .build/cgd/*.ll .build/cgd/*.s
 python3 tools/gerar_curl_infos.py
-for SRC in src/*.c; do
-    NAME=$(basename "$SRC" .c)
+
+for SRC in src/*.c src/gc/*.c; do
+    case "$SRC" in
+    src/gc/*) NAME="gc_$(basename "$SRC" .c)" ;;
+    *) NAME="$(basename "$SRC" .c)" ;;
+    esac
     case "$TARGET" in
-    o) "$CC" $CFLAGS -c "$SRC" -o ".build/$NAME.o" ;;
-    ll) "$CC" $CFLAGS -S -emit-llvm "$SRC" -o ".build/$NAME.ll" ;;
-    s) "$CC" $CFLAGS -S "$SRC" -o ".build/$NAME.s" ;;
+    o) "$CC" $BASE_CFLAGS -c "$SRC" -o ".build/cgd/$NAME.o" ;;
+    ll) "$CC" $BASE_CFLAGS -S -emit-llvm "$SRC" -o ".build/cgd/$NAME.ll" ;;
+    s) "$CC" $BASE_CFLAGS -S "$SRC" -o ".build/cgd/$NAME.s" ;;
     esac
 done
+
 if [ "$TARGET" = o ]; then
-    "$CC" -r .build/*.o -o libdelegua_rt.o
-    echo "OK -> libdelegua_rt.o"
+    "$CC" -r .build/cgd/*.o -o libdelegua_rt.o
+    echo "OK -> libdelegua_rt.o (CGD-GC)"
+
+    if [ "$CGD_BUILD_BOEHM" = "1" ] && pkg-config --exists bdw-gc; then
+        mkdir -p .build/boehm
+        rm -f .build/boehm/*.o
+        BOEHM_CFLAGS="$BASE_CFLAGS -DCGD_GC_BACKEND_BOEHM=1 $(pkg-config --cflags bdw-gc)"
+        for SRC in src/*.c src/gc/*.c; do
+            case "$SRC" in
+            src/gc/*) NAME="gc_$(basename "$SRC" .c)" ;;
+            *) NAME="$(basename "$SRC" .c)" ;;
+            esac
+            "$CC" $BOEHM_CFLAGS -c "$SRC" -o ".build/boehm/$NAME.o"
+        done
+        "$CC" -r .build/boehm/*.o -o libdelegua_rt_boehm.o
+        echo "OK -> libdelegua_rt_boehm.o (Boehm GC referência)"
+    fi
+
+    if [ -f bridges/gtk4_bridge.c ] && pkg-config --exists gtk4; then
+        "$CC" -std=gnu11 -Wall -Wextra -Werror -fPIC ${RT_OPT} -g ${USER_CFLAGS} \
+            $(pkg-config --cflags gtk4) -c bridges/gtk4_bridge.c -o libdelegua_gtk4.o
+        echo "OK -> libdelegua_gtk4.o (opcional)"
+    fi
+    if [ -f bridges/sdl3_bridge.c ] && pkg-config --exists sdl3; then
+        "$CC" -std=gnu11 -Wall -Wextra -Werror -fPIC ${RT_OPT} -g ${USER_CFLAGS} \
+            $(pkg-config --cflags sdl3) -c bridges/sdl3_bridge.c -o libdelegua_sdl3.o
+        echo "OK -> libdelegua_sdl3.o (opcional)"
+    fi
 else
-    echo "OK -> .build/*.$TARGET (um arquivo por módulo)"
+    echo "OK -> .build/cgd/*.$TARGET (um arquivo por módulo)"
 fi

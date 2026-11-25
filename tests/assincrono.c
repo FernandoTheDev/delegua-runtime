@@ -146,7 +146,7 @@ static rt_async_result close_running(void *userdata, delegua_value value) {
 
 static void fifo_and_reentry(void) {
     rt_async_loop *loop = rt_async_create(limits);
-    order_context *order = GC_MALLOC(sizeof(*order));
+    order_context *order = cgd_gc_alloc(sizeof(*order));
     order->loop = loop;
     order->source = rt_promise_create(loop);
     rt_promise_then(order->source, record_first, NULL, order);
@@ -327,7 +327,7 @@ static void invalid_operations(void) {
 
 static rt_async_result gc_context(void *userdata, delegua_value value) {
     delegua_value *held = userdata;
-    GC_gcollect();
+    cgd_gc_collect(false);
     REQUIRE(held->type == DELEGUA_T_TEXT);
     REQUIRE(held->value.text.len == 16);
     REQUIRE(memcmp(held->value.text.ptr, "contexto mantido", 16) == 0);
@@ -338,7 +338,7 @@ static rt_async_result gc_context(void *userdata, delegua_value value) {
 }
 
 static rt_async_result resolve_gc_work(void *userdata, delegua_value value) {
-    GC_gcollect();
+    cgd_gc_collect(false);
     REQUIRE(rt_promise_status(userdata) == RT_PROMISE_PENDING);
     rt_promise_resolve(userdata, create_text_len("valor mantido", 13));
     return value_result(value);
@@ -346,7 +346,7 @@ static rt_async_result resolve_gc_work(void *userdata, delegua_value value) {
 
 static void enqueue_gc_work(rt_async_loop *loop, bool pending) {
     rt_promise *p = rt_promise_create(loop);
-    delegua_value *held = GC_MALLOC(sizeof(*held));
+    delegua_value *held = cgd_gc_alloc(sizeof(*held));
     *held = create_text_len("contexto mantido", 16);
     rt_promise_then(p, gc_context, NULL, held);
     if (!pending)
@@ -364,7 +364,7 @@ static void gc_and_stress(void) {
     calls = 0;
     enqueue_gc_work(loop, false);
     enqueue_gc_work(loop, true);
-    GC_gcollect();
+    cgd_gc_collect(false);
     REQUIRE(rt_async_checkpoint(loop) == 3 && calls == 2);
     /* Reutilização com quota pequena detecta retenção indevida no registro. */
     rt_async_close(loop);
@@ -377,7 +377,7 @@ static void gc_and_stress(void) {
         REQUIRE(rt_promise_value(q).value.num == (i64)i + 1);
         REQUIRE(rt_async_pending(loop) == 0 && rt_async_reactions(loop) == 0);
         if (i % 2000 == 0)
-            GC_gcollect();
+            cgd_gc_collect(false);
     }
     rt_async_close(loop);
     loop = rt_async_create(limits);
@@ -385,7 +385,7 @@ static void gc_and_stress(void) {
     for (unsigned i = 0; i < 12000; i++)
         tail = rt_promise_then(tail, increment, NULL, NULL);
     REQUIRE(rt_async_pending(loop) == 12001 && rt_async_reactions(loop) == 12000);
-    GC_gcollect();
+    cgd_gc_collect(false);
     rt_promise_resolve(head, create_num(0));
     REQUIRE(rt_async_checkpoint(loop) == 12000);
     REQUIRE(rt_promise_value(tail).value.num == 12000);
@@ -454,7 +454,7 @@ static void routine_reactor(void) {
     rt_promise_acknowledge(refused);
     rt_promise *cancelled = rt_routine_start(return_second, 2, args);
     REQUIRE(rt_promise_cancel(cancelled));
-    GC_gcollect();
+    cgd_gc_collect(false);
     while (rt_io_pending())
         rt_io_step();
     REQUIRE(rt_promise_status(cancelled) == RT_PROMISE_REJECTED);
@@ -480,7 +480,7 @@ static void transfer_packets(void) {
     rt_transfer_packet *packet = NULL;
     REQUIRE(rt_transfer_pack(5, values, &packet) == RT_TRANSFER_OK);
     binary[0] = 'z';
-    GC_gcollect();
+    cgd_gc_collect(false);
     REQUIRE(rt_transfer_count(packet) == 5);
     rt_transfer_view view;
     REQUIRE(rt_transfer_get(packet, 4, &view) == RT_TRANSFER_OK);
@@ -511,7 +511,7 @@ static void remove_batch(void *data, uint32_t events) {
         rt_io_remove(batch_watches[i]);
         batch_watches[i] = NULL;
     }
-    GC_gcollect();
+    cgd_gc_collect(false);
 }
 static unsigned next_timer;
 static void timer_fired(void *data) {
@@ -521,14 +521,14 @@ static void timer_fired(void *data) {
 }
 static void timer_gc(void) {
     for (unsigned i = 0; i < 2048; i++) {
-        unsigned *id = GC_MALLOC(sizeof(*id));
+        unsigned *id = cgd_gc_alloc_atomic(sizeof(*id));
         REQUIRE(id != NULL);
         *id = i;
         rt_io_timer *timer = rt_io_after(0, timer_fired, NULL, id);
         if (i % 2)
             rt_io_timer_remove(timer);
     }
-    GC_gcollect();
+    cgd_gc_collect(false);
     while (rt_io_pending())
         rt_io_step();
     REQUIRE(next_timer == 2048);

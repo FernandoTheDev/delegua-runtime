@@ -1,12 +1,22 @@
 #!/bin/sh
 set -eu
 CC=${CC:-clang}
+GC_BACKEND=${CGD_GC_BACKEND:-cgd}
 ./build
-"$CC" -std=c99 -fPIC -shared ffi/soma.c -o .build/soma.so $(pkg-config --cflags --libs bdw-gc libcurl)
+if [ "$GC_BACKEND" = "boehm" ]; then
+    RT_OBJ="libdelegua_rt_boehm.o"
+    GC_FLAGS="-DCGD_GC_BACKEND_BOEHM=1 $(pkg-config --cflags --libs bdw-gc)"
+else
+    RT_OBJ="libdelegua_rt.o"
+    GC_FLAGS="-lpthread"
+fi
+CURL_FLAGS="$(pkg-config --cflags --libs libcurl)"
+
+"$CC" -std=c99 -fPIC -shared ffi/soma.c -o .build/soma.so $GC_FLAGS $CURL_FLAGS
 # CFLAGS permite executar a mesma suíte com sanitizadores e NDEBUG.
-"$CC" -std=c99 -Wall -Wextra -Werror ${CFLAGS:-} tests/runtime.c libdelegua_rt.o $(pkg-config --cflags --libs bdw-gc libcurl) -rdynamic -ldl -lm -o .build/test-runtime
+"$CC" -std=c99 -Wall -Wextra -Werror ${CFLAGS:-} tests/runtime.c "$RT_OBJ" $GC_FLAGS $CURL_FLAGS -rdynamic -ldl -lm -o .build/test-runtime
 .build/test-runtime
-"$CC" -std=c99 -Wall -Wextra -Werror ${CFLAGS:-} tests/assincrono.c tests/rotinas_pool.c libdelegua_rt.o $(pkg-config --cflags --libs bdw-gc libcurl) -rdynamic -ldl -lm -o .build/test-async
+"$CC" -std=c99 -Wall -Wextra -Werror ${CFLAGS:-} tests/assincrono.c tests/rotinas_pool.c "$RT_OBJ" $GC_FLAGS $CURL_FLAGS -rdynamic -ldl -lm -o .build/test-async
 .build/test-async
 for mode in source-site legacy-source power intdiv membership tuple-conversion random-range index overflow sub mul div cast parse shift slice tuple null allocation key arity ffi closed; do
 	set +e

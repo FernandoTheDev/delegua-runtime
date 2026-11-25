@@ -189,9 +189,10 @@ delegua_value delegua_ffi_sqliteAbrir(sz argc, delegua_value *argv) {
             sql_api.close_v2(db);
         delegua_panicf("SQLite abrir falhou: %s", copy);
     }
-    rt_sqlite *h = rt_alloc(1, sizeof(*h));
+    rt_sqlite *h = cgd_gc_alloc_atomic(sizeof(*h));
+    CHECK_NULL(h);
     h->db = db;
-    GC_register_finalizer_no_order(h, sqlite_finalizer, NULL, NULL, NULL);
+    cgd_gc_register_finalizer(h, sqlite_finalizer, NULL);
     return (delegua_value){.type = DELEGUA_T_SQLITE, .value.ptr = h};
 }
 

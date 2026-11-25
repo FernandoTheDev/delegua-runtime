@@ -73,8 +73,10 @@ rt_io_watch *rt_io_add(int fd, uint32_t interest, rt_io_ready callback, rt_io_fa
         delegua_panic("Falha ao registrar descritor no reactor.");
     watch->active = true;
     watch->next = watches;
-    if (watches)
+    if (watches) {
         watches->previous = watch;
+        cgd_gc_write_barrier_ptr(watches, watch);
+    }
     watches = watch;
     watch_count++;
     return watch;
@@ -103,15 +105,19 @@ void rt_io_remove(rt_io_watch *watch) {
     bool keep = removed < 0 && errno != EBADF && errno != ENOENT;
     if (keep)
         reactor_broken = true;
-    if (watch->previous)
+    if (watch->previous) {
         watch->previous->next = watch->next;
-    else
+        cgd_gc_write_barrier_ptr(watch->previous, watch->next);
+    } else
         watches = watch->next;
-    if (watch->next)
+    if (watch->next) {
         watch->next->previous = watch->previous;
+        cgd_gc_write_barrier_ptr(watch->next, watch->previous);
+    }
     watch->next = watch->previous = NULL;
     if (keep) {
         watch->next = retired;
+        cgd_gc_write_barrier_ptr(watch, retired);
         retired = watch;
     }
     watch->data = NULL;
@@ -125,6 +131,8 @@ static void swap_timers(sz left, sz right) {
     rt_io_timer *saved = timers[left];
     timers[left] = timers[right];
     timers[right] = saved;
+    cgd_gc_write_barrier_ptr(&timers[left], timers[left]);
+    cgd_gc_write_barrier_ptr(&timers[right], timers[right]);
     timers[left]->index = left;
     timers[right]->index = right;
 }
@@ -158,7 +166,7 @@ rt_io_timer *rt_io_after(i64 milliseconds, rt_io_timeout callback, rt_io_failure
         delegua_panic("Limite de temporizadores pendentes excedido.");
     if (timer_count == timer_capacity) {
         sz capacity = timer_capacity ? timer_capacity * 2 : 64;
-        rt_io_timer **grown = GC_REALLOC(timers, capacity * sizeof(*timers));
+        rt_io_timer **grown = cgd_gc_realloc(timers, capacity * sizeof(*timers));
         CHECK_NULL(grown);
         timers = grown;
         timer_capacity = capacity;
@@ -170,8 +178,10 @@ rt_io_timer *rt_io_after(i64 milliseconds, rt_io_timeout callback, rt_io_failure
     timer->callback = callback;
     timer->failure = failure;
     timer->data = data;
+    cgd_gc_write_barrier_ptr(timer, data);
     timer->index = timer_count;
     timers[timer_count++] = timer;
+    cgd_gc_write_barrier_ptr(&timers[timer->index], timer);
     up(timer->index);
     return timer;
 }
@@ -181,6 +191,7 @@ static void dequeue_timer(rt_io_timer *timer) {
     timer_count--;
     if (index != timer_count) {
         timers[index] = timers[timer_count];
+        cgd_gc_write_barrier_ptr(&timers[index], timers[index]);
         timers[index]->index = index;
     }
     timers[timer_count] = NULL;
@@ -217,9 +228,12 @@ static void collect_events(int64_t deadline) {
         timeout = delay <= 0 ? 0 : delay > INT_MAX ? INT_MAX : (int)delay;
     }
     struct epoll_event events[BATCH_SIZE];
+    cgd_gc_enter_blocking();
     int ready = epoll_wait(reactor, events, BATCH_SIZE, timeout);
+    int saved_err = errno;
+    cgd_gc_leave_blocking();
     if (ready < 0) {
-        if (errno == EINTR)
+        if (saved_err == EINTR)
             return;
         delegua_panic("Falha na espera do reactor epoll.");
     }
@@ -322,4 +336,21 @@ delegua_value delegua_async_dormir(sz argc, delegua_value *argv) {
         sleep_failed(operation, frame->error);
     delegua_sair_tente(frame);
     return (delegua_value){.type = DELEGUA_T_PROMESSA, .value.ptr = operation->promise};
+}
+
+void rt_gc_scan_assincrono_io(cgd_gc_visit_fn visit_ptr, void *gc_ctx) {
+    if (!visit_ptr)
+        return;
+    if (watches)
+        visit_ptr(watches, gc_ctx);
+    if (retired)
+        visit_ptr(retired, gc_ctx);
+    if (timers)
+        visit_ptr(timers, gc_ctx);
+    for (sz i = cursor; i < batch_count; ++i) {
+        if (batch[i].timer)
+            visit_ptr(batch[i].timer, gc_ctx);
+        if (batch[i].watch)
+            visit_ptr(batch[i].watch, gc_ctx);
+    }
 }

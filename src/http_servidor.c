@@ -29,7 +29,8 @@ static int hex_digit(unsigned char ch) {
 }
 /* Decodifica exatamente uma vez; nunca transforma o caminho em caminho de arquivo. */
 static delegua_value decode(const char *data, size_t size, bool query, bool *valid) {
-    char *buffer = rt_alloc(size + 1, 1);
+    char *buffer = cgd_gc_alloc_atomic(size + 1);
+    CHECK_NULL(buffer);
     size_t used = 0;
     for (size_t i = 0; i < size; ++i) {
         unsigned char ch = (unsigned char)data[i];
@@ -104,7 +105,8 @@ static delegua_value build_request_map(const char *buffer, size_t header_size, s
         }
     }
     for (size_t i = 0; i < request->count; ++i) {
-        char *name = rt_alloc(request->names[i].size + 1, 1);
+        char *name = cgd_gc_alloc_atomic(request->names[i].size + 1);
+        CHECK_NULL(name);
         for (size_t j = 0; j < request->names[i].size; ++j) {
             char ch = request->names[i].data[j];
             name[j] = ch >= 'A' && ch <= 'Z' ? (char)(ch + 32) : ch;
@@ -131,7 +133,8 @@ delegua_value delegua_ffi_httpReceber(sz argc, delegua_value *argv) {
     size_t body_limit = (size_t)integer(argv[2], 0, 16777216);
     int64_t deadline = rt_socket_deadline(integer(argv[3], 1, 86400000));
     /* Reserva limitada antes da leitura; nada cresce em função do cliente. */
-    char *buffer = rt_alloc(header_limit + body_limit + 1, 1);
+    char *buffer = cgd_gc_alloc_atomic(header_limit + body_limit + 1);
+    CHECK_NULL(buffer);
     size_t used = 0, header_size = 0, scan = 0;
     while (!header_size) {
         if (used == header_limit)
@@ -207,7 +210,8 @@ static char *format_headers(int status, delegua_value map, size_t body_size, boo
     delegua_value keys = delegua_map_listar(map, false);
     if (keys.value.vetor->size > RT_HTTP_FIELDS)
         delegua_panic("HTTP: excesso de cabeçalhos de resposta.");
-    char *headers = rt_alloc(65537, 1);
+    char *headers = cgd_gc_alloc_atomic(65537);
+    CHECK_NULL(headers);
     int initial = snprintf(headers, 65537, "HTTP/1.1 %d CGD\r\nConnection: %s\r\n", status,
                            keep_alive ? "keep-alive" : "close");
     size_t used = (size_t)initial;
@@ -230,7 +234,8 @@ static char *format_headers(int status, delegua_value map, size_t body_size, boo
         const char *name = rt_sistema_texto(key, false);
         if (!rt_http_token(name, key.value.text.len))
             delegua_panic("HTTP: nome de cabeçalho inválido.");
-        char *lower = rt_alloc(key.value.text.len + 1, 1);
+        char *lower = cgd_gc_alloc_atomic(key.value.text.len + 1);
+        CHECK_NULL(lower);
         for (size_t j = 0; j < key.value.text.len; ++j)
             lower[j] = name[j] >= 'A' && name[j] <= 'Z' ? (char)(name[j] + 32) : name[j];
         lower[key.value.text.len] = 0;
@@ -271,7 +276,7 @@ delegua_value delegua_ffi_httpFormatarResposta(sz argc, delegua_value *argv) {
     size_t header_len = 0;
     char *headers = format_headers(status, argv[1], body_size, argv[4].value.b1, &header_len);
     size_t total = header_len + (argv[3].value.b1 ? 0 : body_size);
-    char *wire = GC_MALLOC_ATOMIC(total + 1);
+    char *wire = cgd_gc_alloc_atomic(total + 1);
     CHECK_NULL(wire);
     memcpy(wire, headers, header_len);
     if (!argv[3].value.b1 && body_size)

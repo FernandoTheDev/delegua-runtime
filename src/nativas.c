@@ -18,7 +18,7 @@ static void append_text(text_builder *b, const char *text, sz size) {
             }
             cap *= 2;
         }
-        b->data = GC_REALLOC(b->data, cap);
+        b->data = cgd_gc_realloc_kind(b->data, cap, CGD_GC_KIND_ATOMIC);
         CHECK_NULL(b->data);
         b->cap = cap;
     }
@@ -122,14 +122,20 @@ delegua_value delegua_leia(delegua_value prompt) {
         fflush(stdout))
         delegua_panic("Falha ao escrever mensagem de entrada.");
     sz size = 0, cap = 128;
-    char *buffer = rt_alloc(cap, 1);
+    char *buffer = cgd_gc_alloc_atomic(cap);
+    CHECK_NULL(buffer);
     int ch;
-    while ((ch = fgetc(stdin)) != EOF && ch != '\n') {
+    for (;;) {
+        cgd_gc_enter_blocking();
+        ch = fgetc(stdin);
+        cgd_gc_leave_blocking();
+        if (ch == EOF || ch == '\n')
+            break;
         if (size == cap) {
             if (cap > SIZE_MAX / 2)
                 delegua_panic("Entrada grande demais.");
             cap *= 2;
-            buffer = GC_REALLOC(buffer, cap);
+            buffer = cgd_gc_realloc_kind(buffer, cap, CGD_GC_KIND_ATOMIC);
             CHECK_NULL(buffer);
         }
         buffer[size++] = (char)ch;

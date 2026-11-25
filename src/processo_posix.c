@@ -71,7 +71,8 @@ delegua_value delegua_ffi_sistemaExecutar(sz argc, delegua_value *argv) {
             continue;
         const char *text = rt_sistema_texto(value, true);
         sz a = strlen(key), b = strlen(text);
-        char *entry = rt_alloc(a + b + 2, 1);
+        char *entry = cgd_gc_alloc_atomic(a + b + 2);
+        CHECK_NULL(entry);
         memcpy(entry, key, a);
         entry[a] = '=';
         memcpy(entry + a + 1, text, b + 1);
@@ -80,7 +81,9 @@ delegua_value delegua_ffi_sistemaExecutar(sz argc, delegua_value *argv) {
     environment[nenv] = NULL;
     sz limit = (sz)requested;
     /* Pré-alocação limitada evita longjmp com descritores abertos. */
-    char *outputs[2] = {rt_alloc(limit + 1, 1), rt_alloc(limit + 1, 1)};
+    char *outputs[2] = {cgd_gc_alloc_atomic(limit + 1), cgd_gc_alloc_atomic(limit + 1)};
+    CHECK_NULL(outputs[0]);
+    CHECK_NULL(outputs[1]);
     sz lengths[2] = {0, 0}, sent = 0;
     int pipes[3][2] = {{-1, -1}, {-1, -1}, {-1, -1}};
     int error = 0, status = 0;
@@ -173,11 +176,14 @@ delegua_value delegua_ffi_sistemaExecutar(sz argc, delegua_value *argv) {
             {pipes[0][0], POLLOUT, 0}, {pipes[1][0], POLLIN, 0}, {pipes[2][0], POLLIN, 0}};
         i64 remaining = timeout - (now - started);
         int delay = (int)(remaining < 20 ? remaining : 20);
+        cgd_gc_enter_blocking();
         int polled = poll(watched, 3, delay);
+        int saved_err = errno;
+        cgd_gc_leave_blocking();
         if (polled < 0) {
-            if (errno == EINTR)
+            if (saved_err == EINTR)
                 continue;
-            error = errno;
+            error = saved_err;
             goto cleanup;
         }
         if (pipes[0][0] >= 0 && watched[0].revents) {

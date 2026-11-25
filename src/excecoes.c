@@ -26,6 +26,7 @@ delegua_value delegua_classe_excecao(void) {
 delegua_try_frame *delegua_tentar(void) {
     delegua_try_frame *f = rt_alloc(1, sizeof(*f));
     f->parent = active;
+    f->gc_root_top = cgd_gc_root_current();
     f->call_depth = delegua_call_depth;
     active = f;
     return f;
@@ -46,12 +47,21 @@ void delegua_falhar(delegua_value value) {
     rt_error_record_origin(value, delegua_local_atual ? delegua_local_atual : &legacy);
     if (active) {
         active->error = value;
+        cgd_gc_write_barrier_val(active, value);
+        cgd_gc_root_unwind(active->gc_root_top);
         delegua_call_depth = active->call_depth;
         longjmp(active->env, 1);
     }
     delegua_value message = delegua_objeto_obter(value, "mensagem");
     delegua_renderizar_erro(stderr, message.value.text.ptr, message.value.text.len);
     exit(1);
+}
+
+void rt_gc_scan_excecoes(cgd_gc_visit_fn visit_ptr,
+                         void (*visit_val)(const delegua_value *v, void *ctx), void *gc_ctx) {
+    (void)visit_ptr;
+    visit_val(&object_class, gc_ctx);
+    visit_val(&exception_class, gc_ctx);
 }
 void delegua_erro(const char *message) {
     if (active && !reporting) {

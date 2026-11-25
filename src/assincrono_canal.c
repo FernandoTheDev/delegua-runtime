@@ -42,22 +42,33 @@ static void canal_finalizer(void *obj, void *client_data) {
 static void queue_push(canal_queue *q, canal_waiter *w) {
     w->prev = q->tail;
     w->next = NULL;
-    if (q->tail)
+    cgd_gc_write_barrier_ptr(w, q->tail);
+    if (q->tail) {
         q->tail->next = w;
-    else
+        cgd_gc_write_barrier_ptr(q->tail, w);
+    } else {
         q->head = w;
+        cgd_gc_write_barrier_ptr(q, w);
+    }
     q->tail = w;
+    cgd_gc_write_barrier_ptr(q, w);
 }
 
 static void queue_remove(canal_queue *q, canal_waiter *w) {
-    if (w->prev)
+    if (w->prev) {
         w->prev->next = w->next;
-    else if (q->head == w)
+        cgd_gc_write_barrier_ptr(w->prev, w->next);
+    } else if (q->head == w) {
         q->head = w->next;
-    if (w->next)
+        cgd_gc_write_barrier_ptr(q, w->next);
+    }
+    if (w->next) {
         w->next->prev = w->prev;
-    else if (q->tail == w)
+        cgd_gc_write_barrier_ptr(w->next, w->prev);
+    } else if (q->tail == w) {
         q->tail = w->prev;
+        cgd_gc_write_barrier_ptr(q, w->prev);
+    }
     w->prev = w->next = NULL;
 }
 
@@ -127,7 +138,7 @@ delegua_value delegua_async_canalCriar(sz argc, delegua_value *argv) {
     ch->capacity = (sz)cap;
     ch->buffer = calloc(ch->capacity, sizeof(*ch->buffer));
     CHECK_NULL(ch->buffer);
-    GC_register_finalizer_no_order(ch, canal_finalizer, NULL, NULL, NULL);
+    cgd_gc_register_finalizer(ch, canal_finalizer, NULL);
     return (delegua_value){.type = DELEGUA_T_CANAL, .value.ptr = ch};
 }
 

@@ -25,8 +25,9 @@ typedef struct {
 } modulo;
 delegua_value create_modulo(delegua_value exports) {
     CHECK_ARG_TYPE(exports.type, DELEGUA_T_MAP, 1);
-    modulo *m = rt_alloc(1, sizeof(*m));
+    modulo *m = rt_alloc_kind(1, sizeof(*m), CGD_GC_KIND_MODULO);
     m->exports = exports;
+    cgd_gc_write_barrier_val(m, exports);
     return (delegua_value){.type = DELEGUA_T_MODULO, .value.ptr = m};
 }
 delegua_value delegua_modulo_obter(delegua_value value, const char *name) {

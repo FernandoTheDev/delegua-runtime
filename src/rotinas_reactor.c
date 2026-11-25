@@ -33,15 +33,8 @@ static uint64_t reactor_now_ns(void) {
     return (uint64_t)ts.tv_sec * UINT64_C(1000000000) + (uint64_t)ts.tv_nsec;
 }
 
-static void worker_gc_attach(void) {
-    struct GC_stack_base sb;
-    if (!GC_thread_is_registered() && GC_get_stack_base(&sb) == GC_SUCCESS)
-        (void)GC_register_my_thread(&sb);
-}
-static void worker_gc_detach(void) {
-    if (GC_thread_is_registered())
-        (void)GC_unregister_my_thread();
-}
+static void worker_gc_attach(void) { cgd_gc_thread_enter(); }
+static void worker_gc_detach(void) { cgd_gc_thread_leave(); }
 
 static void remove_if_idle(void) {
     if (!count && watch) {
@@ -139,7 +132,7 @@ static rt_promise *routine_start_internal(rt_pool_fn callback, delegua_routine_c
         if (result_type)
             rt_promise_add_type(op->promise, result_type);
         if (!pool) {
-            GC_allow_register_threads();
+            cgd_gc_allow_threads();
             (void)delegua_classe_objeto();
             (void)delegua_classe_excecao();
             pool = rt_pool_create_with_hooks(effective_workers(), configured_capacity,
@@ -196,9 +189,12 @@ static rt_transfer_status delegua_worker_run(const rt_pool_job *job, rt_transfer
     delegua_try_frame *frame = delegua_tentar();
     if (setjmp(frame->env) == 0) {
         sz n = rt_transfer_count(*packet);
-        delegua_value *args = n ? rt_alloc(n, sizeof(*args)) : NULL;
-        for (sz i = 0; i < n; i++)
+        delegua_value *args =
+            n ? rt_alloc_kind(n, sizeof(*args), CGD_GC_KIND_VALUE_ARRAY) : NULL;
+        for (sz i = 0; i < n; i++) {
             args[i] = rt_transfer_materialize_at(*packet, i);
+            cgd_gc_write_barrier_val(&args[i], args[i]);
+        }
         delegua_value ret = ctx->fn(n, args);
         rt_transfer_packet *packed = NULL;
         rt_transfer_status pack_status = rt_transfer_pack(1, &ret, &packed);
@@ -292,4 +288,15 @@ delegua_value delegua_async_rotinasEstatisticas(sz argc, delegua_value *argv) {
     map_set(out, "tempoExecucaoMs", create_real((double)st.exec_ns_total / 1000000.0));
     map_set(out, "tempoTransferenciaMs", create_real((double)transfer_ns_total / 1000000.0));
     return out;
+}
+
+void rt_gc_scan_rotinas(cgd_gc_visit_fn visit_ptr, void *gc_ctx) {
+    if (!visit_ptr)
+        return;
+    if (watch)
+        visit_ptr(watch, gc_ctx);
+    for (sz i = 0; i < MAX_CAPACITY; ++i) {
+        if (active[i])
+            visit_ptr(active[i], gc_ctx);
+    }
 }

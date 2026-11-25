@@ -68,7 +68,7 @@ u32 rt_utf8_next(delegua_value text, sz *offset) {
 typedef struct {
     uintptr_t addr;
     sz byte_len;
-    GC_word gc_no;
+    uint64_t gc_no;
     u64 head_sample;
     u64 mid_sample;
     u64 tail_sample;
@@ -105,7 +105,7 @@ static utf8_cache_entry *utf8_cache_get(delegua_value text) {
     const char *ptr = text.value.text.ptr;
     sz len = text.value.text.len;
     uintptr_t addr = (uintptr_t)ptr;
-    GC_word gc_no = GC_get_gc_no();
+    uint64_t gc_no = cgd_gc_cycle_count();
     u64 head = 0, mid = 0, tail = 0;
     utf8_sample(ptr, len, &head, &mid, &tail);
 
@@ -283,7 +283,8 @@ delegua_value rt_text_case(delegua_value text, bool upper) {
     CHECK_ARG_TYPE(text.type, DELEGUA_T_TEXT, 1);
     if (text.value.text.len > (SIZE_MAX - 1) / 12)
         delegua_panic("Texto grande demais.");
-    char *out = rt_alloc(text.value.text.len * 12 + 1, 1);
+    char *out = cgd_gc_alloc_atomic(text.value.text.len * 12 + 1);
+    CHECK_NULL(out);
     sz offset = 0, size = 0;
     bool previous_cased = false;
     const unicode_case *table = upper ? unicode_upper : unicode_lower;

@@ -61,6 +61,8 @@ void routine_pool(void) {
 }
 
 #ifdef CGD_TEST_POOL_MAIN
+void cgd_gc_enter_blocking(void) {}
+void cgd_gc_leave_blocking(void) {}
 int main(void) {
     routine_pool();
     return 0;

@@ -36,8 +36,9 @@ static delegua_value bytes_wrap(const unsigned char *src, sz len) {
     b->immutable = false;
     b->shared = NULL;
     if (len) {
-        b->data = GC_MALLOC_ATOMIC(len);
+        b->data = cgd_gc_alloc_atomic(len);
         CHECK_NULL(b->data);
+        cgd_gc_write_barrier_ptr(b, b->data);
         if (src)
             memcpy(b->data, src, len);
         else
@@ -56,7 +57,7 @@ delegua_value rt_bytes_wrap_shared(rt_shared_bytes *shared) {
     b->cap = shared->len;
     b->immutable = true;
     b->shared = rt_shared_bytes_retain(shared);
-    GC_register_finalizer_no_order(b, bytes_shared_finalizer, NULL, NULL, NULL);
+    cgd_gc_register_finalizer(b, bytes_shared_finalizer, NULL);
     return (delegua_value){.type = DELEGUA_T_BYTES, .value.ptr = b};
 }
 
@@ -75,12 +76,13 @@ static void bytes_ensure(rt_bytes *b, sz extra) {
         }
         new_cap *= 2;
     }
-    unsigned char *next = GC_MALLOC_ATOMIC(new_cap);
+    unsigned char *next = cgd_gc_alloc_atomic(new_cap);
     CHECK_NULL(next);
     if (b->len && b->data)
         memcpy(next, b->data, b->len);
     b->data = next;
     b->cap = new_cap;
+    cgd_gc_write_barrier_ptr(b, next);
 }
 
 delegua_value delegua_ffi_bytesCriar(sz argc, delegua_value *argv) {
@@ -226,7 +228,7 @@ delegua_value delegua_ffi_bytesParaHex(sz argc, delegua_value *argv) {
     CHECK_ARGC(argc, 1);
     rt_bytes *b = bytes_from(argv[0]);
     static const char digits[] = "0123456789abcdef";
-    char *out = GC_MALLOC_ATOMIC(b->len * 2 + 1);
+    char *out = cgd_gc_alloc_atomic(b->len * 2 + 1);
     CHECK_NULL(out);
     for (sz i = 0; i < b->len; i++) {
         out[i * 2] = digits[b->data[i] >> 4];
@@ -281,7 +283,7 @@ delegua_value delegua_ffi_bytesParaBase64(sz argc, delegua_value *argv) {
     CHECK_ARGC(argc, 1);
     rt_bytes *b = bytes_from(argv[0]);
     sz out_len = ((b->len + 2) / 3) * 4;
-    char *out = GC_MALLOC_ATOMIC(out_len + 1);
+    char *out = cgd_gc_alloc_atomic(out_len + 1);
     CHECK_NULL(out);
     sz j = 0;
     for (sz i = 0; i < b->len; i += 3) {
@@ -363,8 +365,9 @@ delegua_value delegua_ffi_bytesCriarReservado(sz argc, delegua_value *argv) {
     b->len = 0;
     b->cap = cap;
     if (cap) {
-        b->data = GC_MALLOC_ATOMIC(cap);
+        b->data = cgd_gc_alloc_atomic(cap);
         CHECK_NULL(b->data);
+        cgd_gc_write_barrier_ptr(b, b->data);
     }
     return (delegua_value){.type = DELEGUA_T_BYTES, .value.ptr = b};
 }
@@ -584,7 +587,7 @@ delegua_value delegua_ffi_bytesCongelar(sz argc, delegua_value *argv) {
     out->cap = sb->len;
     out->immutable = true;
     out->shared = sb;
-    GC_register_finalizer_no_order(out, bytes_shared_finalizer, NULL, NULL, NULL);
+    cgd_gc_register_finalizer(out, bytes_shared_finalizer, NULL);
     return (delegua_value){.type = DELEGUA_T_BYTES, .value.ptr = out};
 }
 
@@ -610,7 +613,7 @@ delegua_value delegua_ffi_bytesLiberar(sz argc, delegua_value *argv) {
     CHECK_ARGC(argc, 1);
     rt_bytes *b = bytes_from(argv[0]);
     if (b->immutable && b->shared) {
-        GC_register_finalizer_no_order(b, NULL, NULL, NULL, NULL);
+        cgd_gc_register_finalizer(b, NULL, NULL);
         rt_shared_bytes_release(b->shared);
         b->shared = NULL;
     }
@@ -629,12 +632,13 @@ delegua_value delegua_ffi_bytesReservar(sz argc, delegua_value *argv) {
     if (req < 0 || req > BYTES_MAX)
         delegua_panic("Capacidade de Bytes fora do intervalo [0, 67108864].");
     if ((sz)req > b->cap) {
-        unsigned char *next = GC_MALLOC_ATOMIC((sz)req);
+        unsigned char *next = cgd_gc_alloc_atomic((sz)req);
         CHECK_NULL(next);
         if (b->len && b->data)
             memcpy(next, b->data, b->len);
         b->data = next;
         b->cap = (sz)req;
+        cgd_gc_write_barrier_ptr(b, next);
     }
     return create_nulo();
 }

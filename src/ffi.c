@@ -67,3 +67,8 @@ delegua_value delegua_close(delegua_value v) {
     pthread_mutex_unlock(&ffi_mutex);
     return create_nulo();
 }
+
+void rt_gc_scan_ffi(cgd_gc_visit_fn visit_ptr, void *gc_ctx) {
+    if (visit_ptr && bibliotecas)
+        visit_ptr(bibliotecas, gc_ctx);
+}

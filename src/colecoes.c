@@ -24,7 +24,9 @@ delegua_value delegua_vetor_setar(delegua_value *v, delegua_value i, delegua_val
     vetor_valido(v, true);
     CHECK_ARG_TYPE(i.type, DELEGUA_T_NUM, 1);
     delegua_vetor_validar_elemento(*v, value);
-    v->value.vetor->values[indice(i.value.num, v->value.vetor->size, false)] = value;
+    sz idx = indice(i.value.num, v->value.vetor->size, false);
+    v->value.vetor->values[idx] = value;
+    cgd_gc_write_barrier_val(&v->value.vetor->values[idx], value);
     return value;
 }
 delegua_value delegua_vetor_adicionar(delegua_value *v, delegua_value value) {
@@ -35,29 +37,39 @@ delegua_value delegua_vetor_adicionar(delegua_value *v, delegua_value value) {
         if (d->cap > SIZE_MAX / 2 / sizeof(delegua_value))
             delegua_panic("Vetor grande demais.");
         sz cap = d->cap ? d->cap * 2 : VETOR_INIT_CAP;
-        void *p = d->values ? GC_REALLOC(d->values, cap * sizeof(delegua_value))
-                            : GC_MALLOC(cap * sizeof(delegua_value));
+        void *p = d->values
+                      ? cgd_gc_realloc_kind(d->values, cap * sizeof(delegua_value),
+                                            CGD_GC_KIND_VALUE_ARRAY)
+                      : cgd_gc_alloc_kind(cap * sizeof(delegua_value), CGD_GC_KIND_VALUE_ARRAY);
         CHECK_NULL(p);
         d->values = p;
         d->cap = cap;
+        cgd_gc_write_barrier_ptr(d, p);
     }
-    d->values[d->size++] = value;
+    sz idx = d->size++;
+    d->values[idx] = value;
+    cgd_gc_write_barrier_val(&d->values[idx], value);
     return *v;
 }
 delegua_value create_tupla(sz count, const delegua_value *values) {
     if (count)
         CHECK_NULL(values);
     sz cap = count ? count : 1;
-    delegua_value *items = GC_MALLOC(sizeof(delegua_value) * cap);
+    delegua_value *items = cgd_gc_alloc_kind(sizeof(delegua_value) * cap, CGD_GC_KIND_VALUE_ARRAY);
     CHECK_NULL(items);
-    if (count)
+    if (count) {
         memcpy(items, values, sizeof(delegua_value) * count);
-    delegua_vetor_data *data = GC_MALLOC(sizeof(delegua_vetor_data));
+        for (sz i = 0; i < count; ++i)
+            cgd_gc_write_barrier_val(&items[i], items[i]);
+    }
+    delegua_vetor_data *data =
+        cgd_gc_alloc_kind(sizeof(delegua_vetor_data), CGD_GC_KIND_VETOR_DATA);
     CHECK_NULL(data);
     data->cap = cap;
     data->size = count;
     data->values = items;
     data->restricoes = NULL;
+    cgd_gc_write_barrier_ptr(data, items);
     return (delegua_value){.type = DELEGUA_T_TUPLA, .value = {.vetor = data}};
 }
 delegua_value delegua_slice(delegua_value v, delegua_value ini, delegua_value end) {
@@ -75,7 +87,7 @@ delegua_value delegua_slice(delegua_value v, delegua_value ini, delegua_value en
     }
     if (v.type == DELEGUA_T_TUPLA)
         return create_tupla(e - i, v.value.vetor->values + i);
-    delegua_value out = create_vetor();
+    delegua_value out = create_vetor_cap(e - i);
     for (; i < e; ++i)
         delegua_vetor_adicionar(&out, v.value.vetor->values[i]);
     return out;
@@ -136,12 +148,13 @@ static bool key_eq(delegua_value a, delegua_value b) {
     return delegua_op_eq(a, b).value.b1;
 }
 delegua_value create_map(void) {
-    hashmap *m = rt_alloc(1, sizeof(*m));
+    hashmap *m = rt_alloc_kind(1, sizeof(*m), CGD_GC_KIND_MAP);
     return (delegua_value){.type = DELEGUA_T_MAP, .value.ptr = m};
 }
 static inline void map_init_buckets(hashmap *m) {
     m->cap = 8;
-    m->buckets = rt_alloc(m->cap, sizeof(entry *));
+    m->buckets = rt_alloc_kind(m->cap, sizeof(entry *), CGD_GC_KIND_MAP_BUCKETS);
+    cgd_gc_write_barrier_ptr(m, m->buckets);
 }
 static entry **buscar(hashmap *m, delegua_value key, u64 h) {
     entry **p = &m->buckets[h & (m->cap - 1)];
@@ -187,32 +200,45 @@ delegua_value rt_map_set_cstr(delegua_value v, const char *key, sz len, u64 h,
     entry **p = buscar_cstr(m, key, len, h);
     if (*p) {
         (*p)->value = value;
+        cgd_gc_write_barrier_val(*p, value);
         return value;
     }
     if (m->size >= m->cap - m->cap / 4) {
         if (m->cap > SIZE_MAX / 2)
             delegua_panic("Mapa grande demais.");
         sz cap = m->cap * 2;
-        entry **b = rt_alloc(cap, sizeof(*b));
+        entry **b = rt_alloc_kind(cap, sizeof(*b), CGD_GC_KIND_MAP_BUCKETS);
         for (sz i = 0; i < m->cap; ++i)
             for (entry *e = m->buckets[i], *next; e; e = next) {
                 next = e->next;
                 sz bucket = e->hash & (cap - 1);
                 e->next = b[bucket];
+                cgd_gc_write_barrier_ptr(e, e->next);
                 b[bucket] = e;
+                cgd_gc_write_barrier_ptr(&b[bucket], e);
             }
         m->buckets = b;
         m->cap = cap;
-        entry *e = rt_alloc(1, sizeof(*e));
+        cgd_gc_write_barrier_ptr(m, b);
+        entry *e = rt_alloc_kind(1, sizeof(*e), CGD_GC_KIND_MAP_ENTRY);
         sz bucket = h & (cap - 1);
-        *e = (entry){create_text_len(key, len), value, h, b[bucket]};
+        delegua_value ktext = create_text_len(key, len);
+        *e = (entry){ktext, value, h, b[bucket]};
+        cgd_gc_write_barrier_val(e, ktext);
+        cgd_gc_write_barrier_val(e, value);
+        cgd_gc_write_barrier_ptr(e, e->next);
         b[bucket] = e;
+        cgd_gc_write_barrier_ptr(&b[bucket], e);
         ++m->size;
         return value;
     }
-    entry *e = rt_alloc(1, sizeof(*e));
-    *e = (entry){create_text_len(key, len), value, h, NULL};
+    entry *e = rt_alloc_kind(1, sizeof(*e), CGD_GC_KIND_MAP_ENTRY);
+    delegua_value ktext = create_text_len(key, len);
+    *e = (entry){ktext, value, h, NULL};
+    cgd_gc_write_barrier_val(e, ktext);
+    cgd_gc_write_barrier_val(e, value);
     *p = e;
+    cgd_gc_write_barrier_ptr(p, e);
     ++m->size;
     return value;
 }
@@ -226,32 +252,43 @@ delegua_value delegua_map_setar(delegua_value v, delegua_value key, delegua_valu
     entry **p = buscar(m, key, h);
     if (*p) {
         (*p)->value = value;
+        cgd_gc_write_barrier_val(*p, value);
         return value;
     }
     if (m->size >= m->cap - m->cap / 4) {
         if (m->cap > SIZE_MAX / 2)
             delegua_panic("Mapa grande demais.");
         sz cap = m->cap * 2;
-        entry **b = rt_alloc(cap, sizeof(*b));
+        entry **b = rt_alloc_kind(cap, sizeof(*b), CGD_GC_KIND_MAP_BUCKETS);
         for (sz i = 0; i < m->cap; ++i)
             for (entry *e = m->buckets[i], *next; e; e = next) {
                 next = e->next;
                 sz bucket = e->hash & (cap - 1);
                 e->next = b[bucket];
+                cgd_gc_write_barrier_ptr(e, e->next);
                 b[bucket] = e;
+                cgd_gc_write_barrier_ptr(&b[bucket], e);
             }
         m->buckets = b;
         m->cap = cap;
-        entry *e = rt_alloc(1, sizeof(*e));
+        cgd_gc_write_barrier_ptr(m, b);
+        entry *e = rt_alloc_kind(1, sizeof(*e), CGD_GC_KIND_MAP_ENTRY);
         sz bucket = h & (cap - 1);
         *e = (entry){key, value, h, b[bucket]};
+        cgd_gc_write_barrier_val(e, key);
+        cgd_gc_write_barrier_val(e, value);
+        cgd_gc_write_barrier_ptr(e, e->next);
         b[bucket] = e;
+        cgd_gc_write_barrier_ptr(&b[bucket], e);
         ++m->size;
         return value;
     }
-    entry *e = rt_alloc(1, sizeof(*e));
+    entry *e = rt_alloc_kind(1, sizeof(*e), CGD_GC_KIND_MAP_ENTRY);
     *e = (entry){key, value, h, NULL};
+    cgd_gc_write_barrier_val(e, key);
+    cgd_gc_write_barrier_val(e, value);
     *p = e;
+    cgd_gc_write_barrier_ptr(p, e);
     ++m->size;
     return value;
 }
@@ -304,6 +341,8 @@ bool delegua_map_remover(delegua_value v, delegua_value key) {
     if (!*p)
         return false;
     *p = (*p)->next;
+    if (*p)
+        cgd_gc_write_barrier_ptr(p, *p);
     --m->size;
     return true;
 }
@@ -350,6 +389,7 @@ typedef struct {
     sz bucket;
     entry *node;
     sz index;
+    uint64_t gc_cycle;
 } map_iter_cache;
 
 static DELEGUA_TLS map_iter_cache iter_cache;
@@ -368,8 +408,9 @@ delegua_value delegua_iterar(delegua_value value, sz index) {
     hashmap *m = mapa(value);
     if (index >= m->size)
         delegua_panic("Índice de iteração fora do intervalo.");
-    if (iter_cache.map == m && iter_cache.buckets == m->buckets && iter_cache.size == m->size &&
-        iter_cache.node && index == iter_cache.index + 1) {
+    uint64_t cur_gc = cgd_gc_cycle_count();
+    if (iter_cache.gc_cycle == cur_gc && iter_cache.map == m && iter_cache.buckets == m->buckets &&
+        iter_cache.size == m->size && iter_cache.node && index == iter_cache.index + 1) {
         entry *e = iter_cache.node->next;
         sz b = iter_cache.bucket;
         while (!e && ++b < m->cap)
@@ -392,6 +433,7 @@ delegua_value delegua_iterar(delegua_value value, sz index) {
                 iter_cache.bucket = b;
                 iter_cache.node = e;
                 iter_cache.index = index;
+                iter_cache.gc_cycle = cur_gc;
                 delegua_value pair[2] = {e->key, e->value};
                 return create_tupla(2, pair);
             }
@@ -442,8 +484,11 @@ delegua_value rt_clonar(delegua_value v, rt_clone_entry **memo, unsigned depth) 
         for (sz i = 0; i < v.value.vetor->size; ++i)
             delegua_vetor_adicionar(&mutable, rt_clonar(v.value.vetor->values[i], memo, depth + 1));
     }
-    if (v.type == DELEGUA_T_VETOR || v.type == DELEGUA_T_TUPLA)
+    if (v.type == DELEGUA_T_VETOR || v.type == DELEGUA_T_TUPLA) {
         out.value.vetor->restricoes = v.value.vetor->restricoes;
+        if (out.value.vetor->restricoes)
+            cgd_gc_write_barrier_ptr(out.value.vetor, out.value.vetor->restricoes);
+    }
     return out;
 }
 delegua_value delegua_clonar(delegua_value v) {
@@ -521,7 +566,7 @@ delegua_value delegua_intervalo(delegua_value v, delegua_value start, delegua_va
             sz byte_b = rt_text_offset(v, (sz)b);
             return create_text_len(v.value.text.ptr + byte_a, byte_b - byte_a);
         }
-        char *buf = GC_MALLOC_ATOMIC(v.value.text.len + 1);
+        char *buf = cgd_gc_alloc_atomic(v.value.text.len + 1);
         CHECK_NULL(buf);
         sz used = 0;
         for (i64 i = a; stride > 0 ? i < b : i > b;) {
@@ -561,3 +606,36 @@ void delegua_map_expandir(delegua_value target, delegua_value source) {
 }
 
 void delegua_map_congelar(delegua_value value) { mapa(value)->readonly = true; }
+
+void rt_gc_trace_map(const void *map_ptr, void (*visit_ptr)(const void *p, void *ctx),
+                     void *gc_ctx) {
+    const hashmap *m = (const hashmap *)map_ptr;
+    if (visit_ptr && m->buckets)
+        visit_ptr(m->buckets, gc_ctx);
+}
+
+void rt_gc_trace_map_entry(const void *entry_ptr, void (*visit_ptr)(const void *p, void *ctx),
+                           void (*visit_val)(const delegua_value *v, void *ctx), void *gc_ctx) {
+    const entry *e = (const entry *)entry_ptr;
+    if (visit_val) {
+        visit_val(&e->key, gc_ctx);
+        visit_val(&e->value, gc_ctx);
+    } else if (visit_ptr) {
+        const delegua_value *vals[2] = {&e->key, &e->value};
+        for (int i = 0; i < 2; ++i) {
+            delegua_type t = vals[i]->type;
+            if (t == DELEGUA_T_TEXT) {
+                if (vals[i]->value.text.ptr != NULL)
+                    visit_ptr(vals[i]->value.text.ptr, gc_ctx);
+            } else if (t == DELEGUA_T_VETOR || t == DELEGUA_T_TUPLA) {
+                if (vals[i]->value.vetor)
+                    visit_ptr(vals[i]->value.vetor, gc_ctx);
+            } else if (t >= DELEGUA_T_MAP && t < DELEGUA_T_COUNT) {
+                if (vals[i]->value.ptr)
+                    visit_ptr(vals[i]->value.ptr, gc_ctx);
+            }
+        }
+    }
+    if (visit_ptr && e->next)
+        visit_ptr(e->next, gc_ctx);
+}

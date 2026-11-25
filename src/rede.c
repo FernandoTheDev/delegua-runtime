@@ -72,12 +72,13 @@ static size_t append(rede_handle *h, char **buffer, size_t *used, const char *da
         h->overflow = true;
         return 0;
     }
-    char *grown = GC_REALLOC(*buffer, *used + bytes + 1);
+    char *grown = cgd_gc_realloc_kind(*buffer, *used + bytes + 1, CGD_GC_KIND_ATOMIC);
     if (!grown) {
         h->overflow = true;
         return 0;
     }
     *buffer = grown;
+    cgd_gc_write_barrier_ptr(h, grown);
     memcpy(grown + *used, data, bytes);
     *used += bytes;
     grown[*used] = 0;
@@ -164,7 +165,7 @@ static delegua_value create_session(sz argc, delegua_value *argv) {
     h->easy = curl_easy_init();
     if (!h->easy)
         delegua_panic("Falha ao criar sessão curl.");
-    GC_register_finalizer_no_order(h, finalize, NULL, NULL, NULL);
+    cgd_gc_register_finalizer(h, finalize, NULL);
     defaults(h);
     delegua_value value = create_nulo();
     value.type = DELEGUA_T_REDE;

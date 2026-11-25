@@ -88,6 +88,7 @@ static inline delegua_value mapa_extra_obter_ou_criar(objeto *o) {
     if (!o->campos_extra) {
         delegua_value m = create_map();
         o->campos_extra = m.value.ptr;
+        cgd_gc_write_barrier_ptr(o, o->campos_extra);
         return m;
     }
     return mapa_extra_valor(o);
@@ -138,6 +139,7 @@ static inline delegua_value objeto_set_slot_or_extra(objeto *o, const char *name
     const campo_slot *s = buscar_slot(o->tipo, name, len, h);
     if (s && s->slot_index < o->slot_count) {
         o->slots[s->slot_index] = value;
+        cgd_gc_write_barrier_val(o, value);
         return value;
     }
     return rt_map_set_cstr(mapa_extra_obter_ou_criar(o), name, len, h, value);
@@ -287,7 +289,7 @@ static void finalizar_layout(classe *c) {
         sz hcap = 4;
         while (hcap < sb.count * 2)
             hcap *= 2;
-        i32 *table = GC_MALLOC_ATOMIC(hcap * sizeof(i32));
+        i32 *table = cgd_gc_alloc_atomic(hcap * sizeof(i32));
         CHECK_NULL(table);
         for (sz i = 0; i < hcap; ++i)
             table[i] = -1;
@@ -305,6 +307,8 @@ static void finalizar_layout(classe *c) {
         c->total_slots = sb.count;
         c->slot_hash_idx = table;
         c->slot_hash_mask = mask;
+        cgd_gc_write_barrier_ptr(c, c->slot_defs);
+        cgd_gc_write_barrier_ptr(c, table);
     } else {
         c->slot_defs = NULL;
         c->total_slots = 0;
@@ -313,6 +317,8 @@ static void finalizar_layout(classe *c) {
     }
     delegua_value init = metodo_cstr(c, "construtor", 10, rt_hash_bytes("construtor", 10));
     c->ctor_cache = init.type == DELEGUA_T_FUNCAO ? init.value.ptr : NULL;
+    if (c->ctor_cache)
+        cgd_gc_write_barrier_ptr(c, c->ctor_cache);
     c->has_initializers = classe_tem_inicializadores(c);
     c->fast_fields = all_plain;
     __atomic_store_n(&c->layout_pronto, true, __ATOMIC_RELEASE);
@@ -324,7 +330,7 @@ delegua_value create_funcao(delegua_native_fn fn, sz aridade) {
 delegua_value create_classe(const char *nome, delegua_value super) {
     if (super.type != DELEGUA_T_NULO && super.type != DELEGUA_T_CLASSE)
         delegua_panic("Superclasse inválida.");
-    classe *c = rt_alloc(1, sizeof(*c));
+    classe *c = rt_alloc_kind(1, sizeof(*c), CGD_GC_KIND_CLASSE);
     c->nome = create_text(nome);
     c->metodos = create_map();
     c->estaticos = create_map();
@@ -343,6 +349,7 @@ delegua_value create_classe(const char *nome, delegua_value super) {
     c->tipos_campos = create_map();
     c->super = super.type == DELEGUA_T_CLASSE ? super.value.ptr : NULL;
     if (c->super) {
+        cgd_gc_write_barrier_ptr(c, c->super);
         c->has_accessors = c->super->has_accessors;
         c->has_restricted = c->super->has_restricted;
     }
@@ -372,10 +379,12 @@ static delegua_value metodo_cstr(classe *c, const char *nome, sz len, u64 h) {
     return create_nulo();
 }
 static delegua_value ligar(delegua_value f, delegua_value receptor) {
-    funcao *copy = rt_alloc(1, sizeof(*copy));
+    funcao *copy = rt_alloc_kind(1, sizeof(*copy), CGD_GC_KIND_FUNCAO);
     *copy = *(funcao *)f.value.ptr;
     copy->ligado = true;
     copy->receptor = receptor;
+    cgd_gc_write_barrier_val(copy, receptor);
+    cgd_gc_write_barrier_val(copy, copy->decoradores);
     f.value.ptr = copy;
     return f;
 }
@@ -420,7 +429,8 @@ static inline delegua_value chamar_metodo_direto(funcao *f, delegua_value recept
     if (argc == SIZE_MAX)
         delegua_panic("Argumentos demais.");
     delegua_value stack_args[16];
-    delegua_value *args = argc < 15 ? stack_args : rt_alloc(argc + 1, sizeof(*args));
+    delegua_value *args =
+        argc < 15 ? stack_args : rt_alloc_kind(argc + 1, sizeof(*args), CGD_GC_KIND_VALUE_ARRAY);
     args[0] = receptor;
     if (argc)
         memcpy(args + 1, argv, argc * sizeof(*args));
@@ -472,11 +482,13 @@ static void inicializar_campos(classe *type, delegua_value self) {
 static inline objeto *alocar_objeto(classe *c, sz nslots) {
     if (nslots > (SIZE_MAX - sizeof(objeto)) / sizeof(delegua_value))
         delegua_panic("Objeto grande demais.");
-    /* GC_MALLOC zera a memória; DELEGUA_T_NULO == 0 já inicializa todos os slots como nulo. */
-    objeto *o = GC_MALLOC(sizeof(objeto) + nslots * sizeof(delegua_value));
+    /* cgd_gc_alloc_kind zera os slots; DELEGUA_T_NULO == 0 já inicializa tudo como nulo. */
+    objeto *o = cgd_gc_alloc_kind(sizeof(objeto) + nslots * sizeof(delegua_value),
+                                  CGD_GC_KIND_OBJETO);
     CHECK_NULL(o);
     o->tipo = c;
     o->slot_count = (u32)nslots;
+    cgd_gc_write_barrier_ptr(o, c);
     return o;
 }
 delegua_value delegua_instanciar(delegua_value v, sz argc, delegua_value *argv) {
@@ -495,6 +507,18 @@ delegua_value delegua_instanciar(delegua_value v, sz argc, delegua_value *argv) 
         chamar_metodo_direto(c->ctor_cache, out, argc, argv);
     else if (argc)
         delegua_panic("Classe sem construtor não recebe argumentos.");
+    return out;
+}
+delegua_value delegua_instanciar_sem_construtor(delegua_value v) {
+    CHECK_ARG_TYPE(v.type, DELEGUA_T_CLASSE, 1);
+    CHECK_NULL(v.value.ptr);
+    classe *c = v.value.ptr;
+    if (DELEGUA_UNLIKELY(c->abstrata))
+        delegua_panic("Classe abstrata/interface não pode ser instanciada.");
+    if (DELEGUA_UNLIKELY(!DELEGUA_ATOMIC_LOAD_INT(&c->layout_pronto)))
+        finalizar_layout(c);
+    objeto *o = alocar_objeto(c, c->total_slots);
+    delegua_value out = {.type = DELEGUA_T_OBJETO, .value.ptr = o};
     return out;
 }
 
@@ -543,7 +567,7 @@ delegua_value create_funcao_intervalo(delegua_native_fn fn, sz minimo, sz maximo
     CHECK_NULL(fn);
     if (minimo > maximo)
         delegua_panic("Intervalo de aridade inválido.");
-    funcao *f = rt_alloc(1, sizeof(*f));
+    funcao *f = rt_alloc_kind(1, sizeof(*f), CGD_GC_KIND_FUNCAO);
     f->fn = fn;
     f->minimo = minimo;
     f->maximo = maximo;
@@ -557,8 +581,10 @@ delegua_value delegua_ajustar_metodo_envelope(delegua_value original, delegua_va
     if (original.type == DELEGUA_T_FUNCAO && original.value.ptr == wrapped.value.ptr)
         return wrapped;
     funcao *src = wrapped.value.ptr;
-    funcao *copy = rt_alloc(1, sizeof(*copy));
+    funcao *copy = rt_alloc_kind(1, sizeof(*copy), CGD_GC_KIND_FUNCAO);
     *copy = *src;
+    cgd_gc_write_barrier_val(copy, copy->receptor);
+    cgd_gc_write_barrier_val(copy, copy->decoradores);
     if (copy->minimo > 0)
         copy->minimo--;
     if (copy->maximo != SIZE_MAX && copy->maximo > 0)
@@ -724,7 +750,8 @@ bool delegua_tipo_compativel(delegua_value v, const char *type) {
         if (len >= 2 && !strcmp(type + len - 2, "[]")) {
             valid = v.type == DELEGUA_T_VETOR;
             if (valid) {
-                char *element = rt_alloc(len - 1, 1);
+                char *element = cgd_gc_alloc_atomic(len - 1);
+                CHECK_NULL(element);
                 memcpy(element, type, len - 2);
                 element[len - 2] = '\0';
                 for (sz i = 0; i < v.value.vetor->size; ++i)
@@ -752,7 +779,8 @@ bool delegua_tipo_compativel(delegua_value v, const char *type) {
                         sz end = i;
                         while (end > begin && type[end - 1] == ' ')
                             --end;
-                        char *element = rt_alloc(end - begin + 1, 1);
+                        char *element = cgd_gc_alloc_atomic(end - begin + 1);
+                        CHECK_NULL(element);
                         memcpy(element, type + begin, end - begin);
                         element[end - begin] = '\0';
                         if (index >= v.value.vetor->size ||
@@ -967,6 +995,7 @@ delegua_value delegua_definir_em(delegua_value v, const char *name, delegua_valu
             }
         }
         o->slots[s->slot_index] = value;
+        cgd_gc_write_barrier_val(o, value);
         return value;
     }
     classe *owner = dona_cstr(o->tipo, name, len, h);
@@ -1041,11 +1070,14 @@ delegua_value rt_clonar_objeto(delegua_value v, rt_clone_entry **memo, unsigned 
     objeto *copy = alocar_objeto(old->tipo, old->slot_count);
     delegua_value out = {.type = DELEGUA_T_OBJETO, .value.ptr = copy};
     rt_clone_record(memo, old, out);
-    for (u32 i = 0; i < old->slot_count; ++i)
+    for (u32 i = 0; i < old->slot_count; ++i) {
         copy->slots[i] = rt_clonar(old->slots[i], memo, depth + 1);
+        cgd_gc_write_barrier_val(copy, copy->slots[i]);
+    }
     if (old->campos_extra) {
         delegua_value cloned_map = rt_clonar(mapa_extra_valor(old), memo, depth + 1);
         copy->campos_extra = cloned_map.value.ptr;
+        cgd_gc_write_barrier_ptr(copy, copy->campos_extra);
     }
     return out;
 }
@@ -1102,23 +1134,29 @@ delegua_value delegua_funcao_cache(delegua_value *slot, delegua_native_fn fn, sz
     CHECK_NULL(slot);
     if (DELEGUA_LIKELY(__atomic_load_n(&slot->type, __ATOMIC_ACQUIRE) == DELEGUA_T_FUNCAO))
         return (delegua_value){.type = DELEGUA_T_FUNCAO, .value = {.ptr = slot->value.ptr}};
+    bool first_init = false;
     pthread_mutex_lock(&func_cache_mutex);
     if (__atomic_load_n(&slot->type, __ATOMIC_RELAXED) == DELEGUA_T_NULO) {
         delegua_value created = create_funcao_intervalo(fn, minimo, maximo);
         slot->value.ptr = created.value.ptr;
         __atomic_store_n(&slot->type, DELEGUA_T_FUNCAO, __ATOMIC_RELEASE);
+        first_init = true;
     }
     void *ptr = slot->value.ptr;
     pthread_mutex_unlock(&func_cache_mutex);
+    if (first_init)
+        cgd_gc_register_global_values(slot, 1);
     return (delegua_value){.type = DELEGUA_T_FUNCAO, .value = {.ptr = ptr}};
 }
 
 void delegua_definir_decoradores(delegua_value value, delegua_value metadata) {
-    if (value.type == DELEGUA_T_CLASSE)
+    if (value.type == DELEGUA_T_CLASSE) {
         ((classe *)value.value.ptr)->decoradores = metadata;
-    else if (value.type == DELEGUA_T_FUNCAO)
+        cgd_gc_write_barrier_val(value.value.ptr, metadata);
+    } else if (value.type == DELEGUA_T_FUNCAO) {
         ((funcao *)value.value.ptr)->decoradores = metadata;
-    else
+        cgd_gc_write_barrier_val(value.value.ptr, metadata);
+    } else
         delegua_panic("Valor não aceita metadados.");
 }
 void delegua_classe_decoradores_campo(delegua_value value, const char *name,
@@ -1377,10 +1415,13 @@ delegua_tipo *delegua_descr_classe(delegua_value klass) {
     delegua_tipo *d = rt_alloc(1, sizeof(*d));
     d->kind = 1;
     d->klass = klass;
+    cgd_gc_write_barrier_val(d, klass);
     __atomic_store_n(&c->descr_propria, d, __ATOMIC_RELEASE);
+    cgd_gc_write_barrier_ptr(c, d);
     return d;
 }
-static delegua_tipo *descr_unary_cached(unsigned kind, delegua_tipo **slot, delegua_tipo *elem) {
+static delegua_tipo *descr_unary_cached(unsigned kind, delegua_tipo *owner, delegua_tipo **slot,
+                                        delegua_tipo *elem) {
     if (slot) {
         delegua_tipo *cached = __atomic_load_n(slot, __ATOMIC_ACQUIRE);
         if (cached)
@@ -1391,27 +1432,36 @@ static delegua_tipo *descr_unary_cached(unsigned kind, delegua_tipo **slot, dele
     d->count = 1;
     d->elements = rt_alloc(1, sizeof(*d->elements));
     d->elements[0] = elem;
-    if (slot)
+    cgd_gc_write_barrier_ptr(d->elements, elem);
+    cgd_gc_write_barrier_ptr(d, d->elements);
+    if (slot) {
         __atomic_store_n(slot, d, __ATOMIC_RELEASE);
+        if (owner)
+            cgd_gc_write_barrier_ptr(owner, d);
+    }
     return d;
 }
 delegua_tipo *delegua_descr_array(delegua_tipo *base) {
-    return descr_unary_cached(2, base ? &base->array_of_this : NULL, base);
+    return descr_unary_cached(2, base, base ? &base->array_of_this : NULL, base);
 }
 delegua_tipo *delegua_descr_tupla(sz count, delegua_tipo **elements) {
     delegua_tipo *d = rt_alloc(1, sizeof(*d));
     d->kind = 3;
     d->count = count;
     d->elements = rt_alloc(count, sizeof(*d->elements));
-    if (count)
+    if (count) {
         memcpy(d->elements, elements, count * sizeof(*elements));
+        for (sz i = 0; i < count; ++i)
+            cgd_gc_write_barrier_ptr(d->elements, elements[i]);
+    }
+    cgd_gc_write_barrier_ptr(d, d->elements);
     return d;
 }
 delegua_tipo *delegua_descr_promessa(delegua_tipo *result) {
-    return descr_unary_cached(4, result ? &result->promise_of_this : NULL, result);
+    return descr_unary_cached(4, result, result ? &result->promise_of_this : NULL, result);
 }
 delegua_tipo *delegua_descr_tarefa(delegua_tipo *result) {
-    return descr_unary_cached(5, result ? &result->task_of_this : NULL, result);
+    return descr_unary_cached(5, result, result ? &result->task_of_this : NULL, result);
 }
 static const char *canonical_type(const char *name) {
     if (!strcmp(name, "inteiro") || !strcmp(name, "longo") || !strcmp(name, "numero") ||
@@ -1547,6 +1597,9 @@ static void fixar_contrato(delegua_value v, delegua_tipo *d, unsigned depth) {
         r->tipo = elem;
         r->next = data->restricoes;
         data->restricoes = r;
+        cgd_gc_write_barrier_ptr(r, elem);
+        cgd_gc_write_barrier_ptr(r, r->next);
+        cgd_gc_write_barrier_ptr(data, r);
         for (sz i = 0; i < data->size; ++i)
             fixar_contrato(data->values[i], elem, depth + 1);
     } else if (d->kind == 3) {
@@ -1614,9 +1667,11 @@ void rt_error_record_origin(delegua_value error, const delegua_local *location) 
         return;
     objeto *object = error.value.ptr;
     if (!object->origem_erro) {
-        delegua_local *copy = rt_alloc(1, sizeof(*copy));
+        delegua_local *copy = cgd_gc_alloc_atomic(sizeof(*copy));
+        CHECK_NULL(copy);
         *copy = *location;
         object->origem_erro = copy;
+        cgd_gc_write_barrier_ptr(object, copy);
     }
 }
 const delegua_local *rt_error_origin(delegua_value error) {
@@ -1686,6 +1741,7 @@ delegua_value delegua_def_ic(delegua_value v, const char *name, delegua_value va
             if (cached->fast_check)
                 validar_slot_valor(cached, value);
             o->slots[cached->slot_index] = value;
+            cgd_gc_write_barrier_val(o, value);
             return value;
         }
         if (DELEGUA_LIKELY(o->tipo->fechada && !o->tipo->has_accessors)) {
@@ -1700,6 +1756,7 @@ delegua_value delegua_def_ic(delegua_value v, const char *name, delegua_value va
                 if (s->fast_check)
                     validar_slot_valor(s, value);
                 o->slots[s->slot_index] = value;
+                cgd_gc_write_barrier_val(o, value);
                 return value;
             }
         }
@@ -1751,6 +1808,10 @@ delegua_value delegua_chamar_ic(delegua_value v, const char *name, delegua_value
                         found->fn = fn_ptr;
                         found->next = o->tipo->ic_metodos;
                         o->tipo->ic_metodos = found;
+                        cgd_gc_write_barrier_ptr(found, found->klass);
+                        cgd_gc_write_barrier_ptr(found, found->fn);
+                        cgd_gc_write_barrier_ptr(found, found->next);
+                        cgd_gc_write_barrier_ptr(o->tipo, found);
                     }
                     pthread_mutex_unlock(&layout_mutex);
                     DELEGUA_ATOMIC_STORE_PTR(ic, found);
@@ -1760,4 +1821,182 @@ delegua_value delegua_chamar_ic(delegua_value v, const char *name, delegua_value
         }
     }
     return delegua_chamar_membro(v, name, caller, argc, argv);
+}
+
+delegua_value delegua_chamar_metodo_fn(delegua_native_fn fn, sz min_args, sz max_args,
+                                       delegua_value receiver, sz argc, delegua_value *argv) {
+    CHECK_NULL(fn);
+    CHECK_ARG_TYPE(receiver.type, DELEGUA_T_OBJETO, 1);
+    if (argc)
+        CHECK_NULL(argv);
+    if (DELEGUA_UNLIKELY(argc < min_args || argc > max_args))
+        delegua_panic("Quantidade de argumentos inválida.");
+    if (DELEGUA_UNLIKELY(delegua_call_depth >= 1024))
+        delegua_panic("Limite de recursão em execução excedido.");
+    if (DELEGUA_UNLIKELY(argc == SIZE_MAX))
+        delegua_panic("Argumentos demais.");
+    delegua_value stack_args[16];
+    delegua_value *args =
+        argc < 15 ? stack_args : rt_alloc_kind(argc + 1, sizeof(*args), CGD_GC_KIND_VALUE_ARRAY);
+    args[0] = receiver;
+    if (argc)
+        memcpy(args + 1, argv, argc * sizeof(*args));
+    delegua_call_depth++;
+    delegua_value result = fn(argc + 1, args);
+    delegua_call_depth--;
+    return result;
+}
+
+delegua_value delegua_init_stack_objeto(void *buf, sz buf_bytes, delegua_value klass, sz argc,
+                                        delegua_value *argv) {
+    CHECK_ARG_TYPE(klass.type, DELEGUA_T_CLASSE, 3);
+    CHECK_NULL(klass.value.ptr);
+    classe *c = klass.value.ptr;
+    if (DELEGUA_UNLIKELY(c->abstrata))
+        delegua_panic("Classe abstrata/interface não pode ser instanciada.");
+    if (DELEGUA_UNLIKELY(!__atomic_load_n(&c->layout_pronto, __ATOMIC_ACQUIRE)))
+        finalizar_layout(c);
+    sz nslots = c->total_slots;
+    if (nslots > (SIZE_MAX - sizeof(objeto)) / sizeof(delegua_value))
+        delegua_panic("Objeto grande demais.");
+    sz needed = sizeof(objeto) + nslots * sizeof(delegua_value);
+    objeto *o = NULL;
+    if (DELEGUA_LIKELY(buf != NULL && buf_bytes >= needed)) {
+        memset(buf, 0, needed);
+        o = (objeto *)buf;
+        o->tipo = c;
+        o->slot_count = (u32)nslots;
+    } else {
+        o = alocar_objeto(c, nslots);
+    }
+    delegua_value out = {.type = DELEGUA_T_OBJETO, .value.ptr = o};
+    if (DELEGUA_UNLIKELY(c->has_initializers))
+        inicializar_campos(c, out);
+    if (c->ctor_cache)
+        chamar_metodo_direto(c->ctor_cache, out, argc, argv);
+    else if (argc)
+        delegua_panic("Classe sem construtor não recebe argumentos.");
+    return out;
+}
+
+static inline void trace_val_helper(const delegua_value *v,
+                                    void (*visit_ptr)(const void *p, void *ctx),
+                                    void (*visit_val)(const delegua_value *v, void *ctx),
+                                    void *gc_ctx) {
+    if (visit_val) {
+        visit_val(v, gc_ctx);
+        return;
+    }
+    if (!visit_ptr || !v)
+        return;
+    delegua_type t = v->type;
+    if (t == DELEGUA_T_TEXT) {
+        if (v->value.text.ptr != NULL)
+            visit_ptr(v->value.text.ptr, gc_ctx);
+    } else if (t == DELEGUA_T_VETOR || t == DELEGUA_T_TUPLA) {
+        if (v->value.vetor)
+            visit_ptr(v->value.vetor, gc_ctx);
+    } else if (t >= DELEGUA_T_MAP && t < DELEGUA_T_COUNT) {
+        if (v->value.ptr)
+            visit_ptr(v->value.ptr, gc_ctx);
+    }
+}
+
+static inline void scan_static_descr(const delegua_tipo *d, cgd_gc_visit_fn visit_ptr,
+                                     void *gc_ctx) {
+    const delegua_tipo *arr = __atomic_load_n(&d->array_of_this, __ATOMIC_ACQUIRE);
+    const delegua_tipo *prm = __atomic_load_n(&d->promise_of_this, __ATOMIC_ACQUIRE);
+    const delegua_tipo *tsk = __atomic_load_n(&d->task_of_this, __ATOMIC_ACQUIRE);
+    if (arr)
+        visit_ptr(arr, gc_ctx);
+    if (prm)
+        visit_ptr(prm, gc_ctx);
+    if (tsk)
+        visit_ptr(tsk, gc_ctx);
+}
+
+void rt_gc_scan_objetos(cgd_gc_visit_fn visit_ptr, void *gc_ctx) {
+    if (!visit_ptr)
+        return;
+    scan_static_descr(&static_descr_qualquer, visit_ptr, gc_ctx);
+    scan_static_descr(&static_descr_objeto, visit_ptr, gc_ctx);
+    scan_static_descr(&static_descr_inteiro, visit_ptr, gc_ctx);
+    scan_static_descr(&static_descr_longo, visit_ptr, gc_ctx);
+    scan_static_descr(&static_descr_numero, visit_ptr, gc_ctx);
+    scan_static_descr(&static_descr_numero_acc, visit_ptr, gc_ctx);
+    scan_static_descr(&static_descr_real, visit_ptr, gc_ctx);
+    scan_static_descr(&static_descr_decimal, visit_ptr, gc_ctx);
+    scan_static_descr(&static_descr_texto, visit_ptr, gc_ctx);
+    scan_static_descr(&static_descr_logico, visit_ptr, gc_ctx);
+    scan_static_descr(&static_descr_logico_acc, visit_ptr, gc_ctx);
+    scan_static_descr(&static_descr_booleano, visit_ptr, gc_ctx);
+    scan_static_descr(&static_descr_binario, visit_ptr, gc_ctx);
+    scan_static_descr(&static_descr_binario_acc, visit_ptr, gc_ctx);
+    scan_static_descr(&static_descr_funcao, visit_ptr, gc_ctx);
+    scan_static_descr(&static_descr_funcao_acc, visit_ptr, gc_ctx);
+    scan_static_descr(&static_descr_tupla, visit_ptr, gc_ctx);
+    scan_static_descr(&static_descr_dicionario, visit_ptr, gc_ctx);
+    scan_static_descr(&static_descr_dicionario_acc, visit_ptr, gc_ctx);
+    scan_static_descr(&static_descr_vazio, visit_ptr, gc_ctx);
+    scan_static_descr(&static_descr_nulo, visit_ptr, gc_ctx);
+}
+
+void rt_gc_trace_objeto(const void *obj_ptr, void (*visit_ptr)(const void *p, void *ctx),
+                        void (*visit_val)(const delegua_value *v, void *ctx), void *gc_ctx) {
+    const objeto *o = (const objeto *)obj_ptr;
+    if (visit_ptr) {
+        if (o->tipo)
+            visit_ptr(o->tipo, gc_ctx);
+        if (o->campos_extra)
+            visit_ptr(o->campos_extra, gc_ctx);
+        if (o->origem_erro)
+            visit_ptr(o->origem_erro, gc_ctx);
+    }
+    for (u32 i = 0; i < o->slot_count; ++i)
+        trace_val_helper(&o->slots[i], visit_ptr, visit_val, gc_ctx);
+}
+
+void rt_gc_trace_classe(const void *cls_ptr, void (*visit_ptr)(const void *p, void *ctx),
+                        void (*visit_val)(const delegua_value *v, void *ctx), void *gc_ctx) {
+    const classe *c = (const classe *)cls_ptr;
+    trace_val_helper(&c->nome, visit_ptr, visit_val, gc_ctx);
+    trace_val_helper(&c->metodos, visit_ptr, visit_val, gc_ctx);
+    trace_val_helper(&c->estaticos, visit_ptr, visit_val, gc_ctx);
+    trace_val_helper(&c->tipos_estaticos, visit_ptr, visit_val, gc_ctx);
+    trace_val_helper(&c->campos, visit_ptr, visit_val, gc_ctx);
+    trace_val_helper(&c->nomes_campos, visit_ptr, visit_val, gc_ctx);
+    trace_val_helper(&c->acessos, visit_ptr, visit_val, gc_ctx);
+    trace_val_helper(&c->getters, visit_ptr, visit_val, gc_ctx);
+    trace_val_helper(&c->setters, visit_ptr, visit_val, gc_ctx);
+    trace_val_helper(&c->accessor_modes, visit_ptr, visit_val, gc_ctx);
+    trace_val_helper(&c->decoradores, visit_ptr, visit_val, gc_ctx);
+    trace_val_helper(&c->decoradores_campos, visit_ptr, visit_val, gc_ctx);
+    trace_val_helper(&c->tipos_campos, visit_ptr, visit_val, gc_ctx);
+    trace_val_helper(&c->inicializadores, visit_ptr, visit_val, gc_ctx);
+    trace_val_helper(&c->interfaces, visit_ptr, visit_val, gc_ctx);
+    trace_val_helper(&c->mixins, visit_ptr, visit_val, gc_ctx);
+    if (visit_ptr) {
+        if (c->descr_propria)
+            visit_ptr(c->descr_propria, gc_ctx);
+        if (c->super)
+            visit_ptr(c->super, gc_ctx);
+        if (c->slot_defs)
+            visit_ptr(c->slot_defs, gc_ctx);
+        if (c->slot_hash_idx)
+            visit_ptr(c->slot_hash_idx, gc_ctx);
+        if (c->ctor_cache)
+            visit_ptr(c->ctor_cache, gc_ctx);
+        if (c->ic_metodos)
+            visit_ptr(c->ic_metodos, gc_ctx);
+    }
+}
+
+void rt_gc_trace_funcao(const void *fn_ptr, void (*visit_val)(const delegua_value *v, void *ctx),
+                        void *gc_ctx) {
+    const funcao *f = (const funcao *)fn_ptr;
+    if (visit_val) {
+        if (f->ligado)
+            visit_val(&f->receptor, gc_ctx);
+        visit_val(&f->decoradores, gc_ctx);
+    }
 }

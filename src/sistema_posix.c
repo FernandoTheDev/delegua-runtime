@@ -36,12 +36,14 @@ delegua_value delegua_ffi_sistemaDiretorio(sz argc, delegua_value *argv) {
     (void)argc;
     (void)argv;
     sz capacity = 4096;
-    char *path = rt_alloc(capacity, 1);
+    char *path = cgd_gc_alloc_atomic(capacity);
+    CHECK_NULL(path);
     while (!getcwd(path, capacity)) {
         if (errno != ERANGE || capacity >= 67108864)
             delegua_panicf("Ambiente: getcwd: %s", strerror(errno));
         capacity *= 2;
-        path = rt_alloc(capacity, 1);
+        path = cgd_gc_alloc_atomic(capacity);
+        CHECK_NULL(path);
     }
     return create_text(path);
 }
@@ -73,9 +75,16 @@ delegua_value delegua_ffi_sistemaDormir(sz argc, delegua_value *argv) {
     if (ms < 0 || ms > 86400000)
         delegua_panic("Tempo: espera deve estar entre 0 e 86400000 ms.");
     struct timespec wait = {(time_t)(ms / 1000), (long)(ms % 1000) * 1000000};
-    while (nanosleep(&wait, &wait))
-        if (errno != EINTR)
-            delegua_panicf("Tempo: nanosleep: %s", strerror(errno));
+    for (;;) {
+        cgd_gc_enter_blocking();
+        int rc = nanosleep(&wait, &wait);
+        int saved_err = errno;
+        cgd_gc_leave_blocking();
+        if (rc == 0)
+            break;
+        if (saved_err != EINTR)
+            delegua_panicf("Tempo: nanosleep: %s", strerror(saved_err));
+    }
     return create_nulo();
 }
 
@@ -446,25 +455,24 @@ delegua_value delegua_ffi_sistemaRecursos(sz argc, delegua_value *argv) {
 delegua_value delegua_ffi_sistemaMemoria(sz argc, delegua_value *argv) {
     CHECK_ARGC(argc, 0);
     (void)argv;
+    cgd_gc_stats st;
+    cgd_gc_get_stats(&st);
     delegua_value out = create_map();
     item(out, "rss_kb", create_num(rt_ler_proc_kb("/proc/self/status", "VmRSS:")));
     item(out, "hwm_kb", create_num(rt_ler_proc_kb("/proc/self/status", "VmHWM:")));
     item(out, "pss_kb", create_num(rt_ler_proc_kb("/proc/self/smaps_rollup", "Pss:")));
-    item(out, "gc_heap", create_num((i64)GC_get_heap_size()));
-    item(out, "gc_free", create_num((i64)GC_get_free_bytes()));
-    item(out, "gc_unmapped", create_num((i64)GC_get_unmapped_bytes()));
-    item(out, "gc_total", create_num((i64)GC_get_total_bytes()));
-    item(out, "gc_use", create_num((i64)GC_get_memory_use()));
-    item(out, "gc_cycles", create_num((i64)GC_get_gc_no()));
+    item(out, "gc_heap", create_num((i64)st.committed_bytes));
+    item(out, "gc_free", create_num((i64)st.free_bytes));
+    item(out, "gc_unmapped", create_num((i64)st.unmapped_bytes));
+    item(out, "gc_total", create_num((i64)st.total_alloc_bytes));
+    item(out, "gc_use", create_num((i64)st.live_bytes));
+    item(out, "gc_cycles", create_num((i64)st.cycle_count));
     return out;
 }
 
 delegua_value delegua_ffi_sistemaColetarGC(sz argc, delegua_value *argv) {
     CHECK_ARGC(argc, 1);
     CHECK_ARG_TYPE(argv[0].type, DELEGUA_T_BOOL, 1);
-    if (argv[0].value.b1)
-        GC_gcollect_and_unmap();
-    else
-        GC_gcollect();
+    cgd_gc_collect(argv[0].value.b1);
     return create_nulo();
 }

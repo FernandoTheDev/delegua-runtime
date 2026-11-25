@@ -355,7 +355,8 @@ static delegua_value juntar(sz argc, delegua_value *argv) {
         return create_text_lit("", 0);
     delegua_value *values = argv[0].value.vetor->values;
     delegua_value stack_texts[64];
-    delegua_value *texts = count <= 64 ? stack_texts : rt_alloc(count, sizeof(*texts));
+    delegua_value *texts =
+        count <= 64 ? stack_texts : rt_alloc_kind(count, sizeof(*texts), CGD_GC_KIND_VALUE_ARRAY);
     sz total = 0;
     sz sep_len = separator.value.text.len;
     for (sz i = 0; i < count; ++i) {
@@ -380,7 +381,7 @@ static delegua_value juntar(sz argc, delegua_value *argv) {
                 return create_text_len(texts[i].value.text.ptr, 1);
         }
     }
-    char *out = GC_MALLOC_ATOMIC(total + 1);
+    char *out = cgd_gc_alloc_atomic(total + 1);
     CHECK_NULL(out);
     sz offset = 0;
     for (sz i = 0; i < count; ++i) {
@@ -402,7 +403,8 @@ static delegua_value concatenar(sz argc, delegua_value *argv) {
         if (argc == 1)
             return argv[0];
         delegua_value stack_texts[32];
-        delegua_value *texts = argc <= 32 ? stack_texts : rt_alloc(argc, sizeof(*texts));
+        delegua_value *texts =
+            argc <= 32 ? stack_texts : rt_alloc_kind(argc, sizeof(*texts), CGD_GC_KIND_VALUE_ARRAY);
         sz total = 0;
         for (sz i = 0; i < argc; ++i) {
             texts[i] = argv[i].type == DELEGUA_T_TEXT ? argv[i] : delegua_para_texto(argv[i]);
@@ -410,7 +412,7 @@ static delegua_value concatenar(sz argc, delegua_value *argv) {
                 delegua_panic("Texto grande demais.");
             total += texts[i].value.text.len;
         }
-        char *out = GC_MALLOC_ATOMIC(total + 1);
+        char *out = cgd_gc_alloc_atomic(total + 1);
         CHECK_NULL(out);
         sz offset = 0;
         for (sz i = 0; i < argc; ++i) {
@@ -464,16 +466,24 @@ static delegua_value encaixar(sz argc, delegua_value *argv) {
     if (needed > v->cap) {
         if (needed > SIZE_MAX / sizeof(*v->values))
             delegua_panic("Vetor grande demais.");
-        v->values = v->values ? GC_REALLOC(v->values, needed * sizeof(*v->values))
-                              : GC_MALLOC(needed * sizeof(*v->values));
+        v->values = v->values
+                        ? cgd_gc_realloc_kind(v->values, needed * sizeof(*v->values),
+                                              CGD_GC_KIND_VALUE_ARRAY)
+                        : cgd_gc_alloc_kind(needed * sizeof(*v->values), CGD_GC_KIND_VALUE_ARRAY);
         CHECK_NULL(v->values);
         v->cap = needed;
+        cgd_gc_write_barrier_ptr(v, v->values);
     }
-    if (old_size > pos + remove)
+    if (old_size > pos + remove) {
         memmove(v->values + pos + extra, v->values + pos + remove,
                 (old_size - pos - remove) * sizeof(*v->values));
-    for (sz i = 0; i < extra; ++i)
+        for (sz i = 0; i < old_size - pos - remove; ++i)
+            cgd_gc_write_barrier_val(&v->values[pos + extra + i], v->values[pos + extra + i]);
+    }
+    for (sz i = 0; i < extra; ++i) {
         v->values[pos + i] = argv[3 + i];
+        cgd_gc_write_barrier_val(&v->values[pos + i], argv[3 + i]);
+    }
     v->size = old_size - remove + extra;
     for (sz i = v->size; i < old_size; ++i)
         v->values[i] = create_nulo();
@@ -508,9 +518,9 @@ static delegua_value ordenar(sz argc, delegua_value *argv) {
     if (n < 2)
         return argv[0];
     delegua_value fn = argc > 1 ? argv[1] : create_nulo();
-    delegua_value *copy = rt_alloc(n, sizeof(*copy));
+    delegua_value *copy = rt_alloc_kind(n, sizeof(*copy), CGD_GC_KIND_VALUE_ARRAY);
     memcpy(copy, v->values, n * sizeof(*copy));
-    delegua_value *buffer = rt_alloc(n, sizeof(*buffer));
+    delegua_value *buffer = rt_alloc_kind(n, sizeof(*buffer), CGD_GC_KIND_VALUE_ARRAY);
     for (sz width = 1; width < n;) {
         for (sz start = 0; start < n;) {
             sz mid = start + (n - start < width ? n - start : width),
@@ -537,6 +547,8 @@ static delegua_value ordenar(sz argc, delegua_value *argv) {
     if (v->size != n)
         delegua_panic("Comparador alterou o tamanho do vetor.");
     memcpy(v->values, copy, n * sizeof(*copy));
+    for (sz i = 0; i < n; ++i)
+        cgd_gc_write_barrier_val(&v->values[i], v->values[i]);
     return argv[0];
 }
 
@@ -810,7 +822,9 @@ delegua_value rt_chamar_metodo_padrao(delegua_value receiver, const char *name, 
                 return delegua_op_in(argv[0], receiver);
             if (!strcmp(name, "concatenar")) {
                 delegua_value stack_args[16];
-                delegua_value *args = argc < 15 ? stack_args : rt_alloc(argc + 1, sizeof(*args));
+                delegua_value *args = argc < 15 ? stack_args
+                                                : rt_alloc_kind(argc + 1, sizeof(*args),
+                                                                CGD_GC_KIND_VALUE_ARRAY);
                 args[0] = receiver;
                 if (argc)
                     memcpy(args + 1, argv, argc * sizeof(*args));
@@ -890,7 +904,9 @@ delegua_value rt_chamar_metodo_padrao(delegua_value receiver, const char *name, 
                 if (argc == SIZE_MAX)
                     delegua_panic("Argumentos demais.");
                 delegua_value stack_args[16];
-                delegua_value *args = argc < 15 ? stack_args : rt_alloc(argc + 1, sizeof(*args));
+                delegua_value *args = argc < 15 ? stack_args
+                                                : rt_alloc_kind(argc + 1, sizeof(*args),
+                                                                CGD_GC_KIND_VALUE_ARRAY);
                 args[0] = receiver;
                 if (argc)
                     memcpy(args + 1, argv, argc * sizeof(*args));

@@ -20,8 +20,8 @@
 
 // ponto de entrada
 int main(int argc, char *argv[]) {
-    GC_INIT();
-    GC_allow_register_threads();
+    cgd_gc_init();
+    cgd_gc_allow_threads();
     (void)delegua_classe_objeto();
     (void)delegua_classe_excecao();
     program_create(&context, argc, argv);
@@ -37,5 +37,6 @@ int main(int argc, char *argv[]) {
     if (failed)
         status = rt_async_program_abort(root->error);
     program_free(&context);
+    cgd_gc_shutdown();
     return status;
 }

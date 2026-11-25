@@ -105,7 +105,7 @@ static size_t receive_body(char *bytes, size_t size, size_t count, void *data) {
             operation->limit_exceeded = true;
             return 0;
         }
-        char *grown = GC_REALLOC(operation->bytes, capacity);
+        char *grown = cgd_gc_realloc_kind(operation->bytes, capacity, CGD_GC_KIND_ATOMIC);
         if (!grown) {
             operation->limit_exceeded = true;
             return 0;
@@ -113,6 +113,7 @@ static size_t receive_body(char *bytes, size_t size, size_t count, void *data) {
         body_memory += capacity - operation->capacity;
         operation->capacity = capacity;
         operation->bytes = grown;
+        cgd_gc_write_barrier_ptr(operation, grown);
     }
     if (length)
         memcpy(operation->bytes + operation->used, bytes, length);
@@ -425,4 +426,17 @@ void rt_async_http_close(void) {
         curl_multi_cleanup(multi);
     multi = NULL;
     waitfds = NULL;
+}
+
+void rt_gc_scan_assincrono_http(cgd_gc_visit_fn visit_ptr, void *gc_ctx) {
+    if (!visit_ptr)
+        return;
+    if (operations)
+        visit_ptr(operations, gc_ctx);
+    if (interests)
+        visit_ptr(interests, gc_ctx);
+    if (building)
+        visit_ptr(building, gc_ctx);
+    if (curl_timer)
+        visit_ptr(curl_timer, gc_ctx);
 }

@@ -152,7 +152,7 @@ void delegua_main(void) {
         snprintf(key, sizeof(key), "chave-%" PRId64, i);
         delegua_map_setar(m, create_text(key), create_num(i));
     }
-    GC_gcollect();
+    cgd_gc_collect(false);
     for (i64 i = 0; i < 1000; ++i) {
         char key[32];
         snprintf(key, sizeof(key), "chave-%" PRId64, i);

@@ -35,7 +35,7 @@ rt_socket *rt_socket_allocate(bool listener) {
     rt_socket *socket = rt_alloc(1, sizeof(*socket));
     socket->fd = -1;
     socket->listener = listener;
-    GC_register_finalizer_no_order(socket, finalize_socket, NULL, NULL, NULL);
+    cgd_gc_register_finalizer(socket, finalize_socket, NULL);
     return socket;
 }
 delegua_value rt_socket_value(rt_socket *socket) {
@@ -82,12 +82,15 @@ static int wait_ready(rt_socket *socket, short events, int64_t deadline) {
         if (now >= deadline)
             return -2;
         struct pollfd descriptor = {socket->fd, events, 0};
+        cgd_gc_enter_blocking();
         int ready = poll(&descriptor, 1, (int)(deadline - now));
+        int saved_err = errno;
+        cgd_gc_leave_blocking();
         if (ready > 0)
             return 0; /* recv/send distinguem HUP e erro. */
         if (!ready)
             return -2;
-        if (errno != EINTR)
+        if (saved_err != EINTR)
             return -1;
     }
 }
@@ -231,7 +234,8 @@ delegua_value delegua_ffi_socketReceber(sz argc, delegua_value *argv) {
     rt_socket *resource = rt_socket_handle(argv[0], false);
     size_t limit = (size_t)number(argv[1], 1, 16777216);
     int64_t deadline = rt_socket_deadline(number(argv[2], 1, 86400000));
-    char *buffer = rt_alloc(limit, 1);
+    char *buffer = cgd_gc_alloc_atomic(limit);
+    CHECK_NULL(buffer);
     ssize_t count = rt_socket_read(resource, buffer, limit, deadline);
     if (count < 0) {
         rt_socket_close(resource);

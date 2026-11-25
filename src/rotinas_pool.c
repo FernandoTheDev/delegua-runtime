@@ -1,6 +1,7 @@
 /* Copyright 2026 Fernando the Dev. SPDX-License-Identifier: Apache-2.0 */
 #define _POSIX_C_SOURCE 200809L
 #include "rotinas_pool.h"
+#include "gc/cgd_gc.h"
 #include <errno.h>
 #include <pthread.h>
 #include <sys/eventfd.h>
@@ -78,6 +79,7 @@ static void *worker(void *data) {
     rt_pool *pool = data;
     if (pool->on_enter)
         pool->on_enter();
+    cgd_gc_enter_blocking();
     pthread_mutex_lock(&pool->mutex);
     for (;;) {
         while (!pool->stopping && !pool->waiting.head)
@@ -92,9 +94,11 @@ static void *worker(void *data) {
         uint64_t wait_ns = started_ns >= job->submitted_ns ? started_ns - job->submitted_ns : 0;
         pool->queue_wait_ns_total += wait_ns;
         pthread_mutex_unlock(&pool->mutex);
+        cgd_gc_leave_blocking();
         job->result.status = job->run(job, &job->result.packet);
         uint64_t done_ns = pool_now_ns();
         uint64_t exec_ns = done_ns >= started_ns ? done_ns - started_ns : 0;
+        cgd_gc_enter_blocking();
         pthread_mutex_lock(&pool->mutex);
         pool->running--;
         pool->completed_total++;
@@ -102,6 +106,7 @@ static void *worker(void *data) {
         finish(pool, job);
     }
     pthread_mutex_unlock(&pool->mutex);
+    cgd_gc_leave_blocking();
     if (pool->on_exit)
         pool->on_exit();
     return NULL;

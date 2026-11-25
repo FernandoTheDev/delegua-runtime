@@ -20,13 +20,7 @@
 
 #include <assert.h>
 #include <dlfcn.h>
-#ifndef GC_THREADS
-#define GC_THREADS
-#endif
-#ifndef GC_NO_THREAD_REDIRECTS
-#define GC_NO_THREAD_REDIRECTS
-#endif
-#include <gc.h>
+#include "gc/cgd_gc.h"
 
 #if defined(__GNUC__) || defined(__clang__)
 #define DELEGUA_NORETURN __attribute__((noreturn))
@@ -196,6 +190,25 @@ struct delegua_value {
     } value;
 };
 
+static inline void cgd_gc_write_barrier_val(const void *container, delegua_value val) {
+#if !CGD_USING_BOEHM
+    if (val.type < DELEGUA_T_TEXT || val.type >= DELEGUA_T_COUNT)
+        return;
+    if (val.type == DELEGUA_T_TEXT) {
+        if (val.value.text.ptr != NULL)
+            cgd_gc_write_barrier_ptr(container, val.value.text.ptr);
+    } else if (val.type == DELEGUA_T_VETOR || val.type == DELEGUA_T_TUPLA) {
+        if (val.value.vetor != NULL)
+            cgd_gc_write_barrier_ptr(container, val.value.vetor);
+    } else if (val.value.ptr != NULL) {
+        cgd_gc_write_barrier_ptr(container, val.value.ptr);
+    }
+#else
+    (void)container;
+    (void)val;
+#endif
+}
+
 // funções auxiliares para criar cada tipo
 // //////////////////////////////////////////////////////////
 static inline delegua_value create_num(i64 num) {
@@ -228,7 +241,7 @@ static inline delegua_value create_text_len(const char *ptr, sz len) {
         };
     if (len == ((sz)-1))
         delegua_panic("Texto grande demais.");
-    char *str = GC_MALLOC_ATOMIC(len + 1);
+    char *str = cgd_gc_alloc_atomic(len + 1);
     CHECK_NULL(str);
     memcpy(str, ptr, len);
     str[len] = '\0';
@@ -248,7 +261,7 @@ static inline delegua_value create_text_concat(delegua_value l, delegua_value r)
     sz size = l.value.text.len + r.value.text.len;
     sz l1 = l.value.text.len;
     sz l2 = r.value.text.len;
-    char *ptr = GC_MALLOC_ATOMIC(size + 1);
+    char *ptr = cgd_gc_alloc_atomic(size + 1);
     CHECK_NULL(ptr);
     memcpy(ptr, l.value.text.ptr, l1);
     memcpy(ptr + l1, r.value.text.ptr, l2);
@@ -261,12 +274,50 @@ static inline delegua_value create_ptr(void *ptr) {
 }
 
 static inline delegua_value create_vetor(void) {
-    delegua_vetor_data *data = GC_MALLOC(sizeof(delegua_vetor_data));
+    delegua_vetor_data *data =
+        (delegua_vetor_data *)cgd_gc_alloc_kind(sizeof(delegua_vetor_data), CGD_GC_KIND_VETOR_DATA);
     CHECK_NULL(data);
     return (delegua_value){
         .type = DELEGUA_T_VETOR,
         .value = {.vetor = data},
     };
+}
+
+static inline delegua_value create_vetor_cap(sz cap) {
+    delegua_vetor_data *data =
+        (delegua_vetor_data *)cgd_gc_alloc_kind(sizeof(delegua_vetor_data), CGD_GC_KIND_VETOR_DATA);
+    CHECK_NULL(data);
+    if (cap > 0) {
+        if (cap > SIZE_MAX / sizeof(delegua_value))
+            delegua_panic("Vetor grande demais.");
+        delegua_value *items = (delegua_value *)cgd_gc_alloc_kind(cap * sizeof(delegua_value),
+                                                                  CGD_GC_KIND_VALUE_ARRAY);
+        CHECK_NULL(items);
+        data->values = items;
+        data->cap = cap;
+        cgd_gc_write_barrier_ptr(data, items);
+    }
+    return (delegua_value){
+        .type = DELEGUA_T_VETOR,
+        .value = {.vetor = data},
+    };
+}
+
+static inline void cgd_gc_free_det_value(delegua_value v) {
+    if (v.type == DELEGUA_T_VETOR || v.type == DELEGUA_T_TUPLA) {
+        delegua_vetor_data *d = v.value.vetor;
+        if (d) {
+            delegua_value *vals = d->values;
+            d->values = NULL;
+            d->size = 0;
+            d->cap = 0;
+            if (vals)
+                cgd_gc_free_deterministic(vals);
+            cgd_gc_free_deterministic(d);
+        }
+    } else if (v.type == DELEGUA_T_OBJETO && v.value.ptr) {
+        cgd_gc_free_deterministic(v.value.ptr);
+    }
 }
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -325,13 +376,13 @@ static inline void program_create(program_context **context, int argc, char *arg
     if (argc < 1)
         goto end;
 
-    _argv = GC_MALLOC(/* 8 */ sizeof(char *) * (sz)argc);
+    _argv = cgd_gc_alloc(/* 8 */ sizeof(char *) * (sz)argc);
     CHECK_NULL(_argv);
     for (int i = 0; i < argc; i++)
         _argv[i] = argv[i];
 
 end:
-    ctx = GC_MALLOC(sizeof(program_context));
+    ctx = cgd_gc_alloc(sizeof(program_context));
     CHECK_NULL(ctx);
 
     *ctx = (program_context){.argc = argc, .argv = _argv};
@@ -390,6 +441,7 @@ delegua_value create_classe(const char *nome, delegua_value superclasse);
 void delegua_classe_metodo(delegua_value classe, const char *nome, delegua_value funcao);
 delegua_value delegua_destruir(delegua_value objeto);
 delegua_value delegua_instanciar(delegua_value classe, sz argc, delegua_value *argv);
+delegua_value delegua_instanciar_sem_construtor(delegua_value classe);
 delegua_value delegua_objeto_obter(delegua_value objeto, const char *nome);
 delegua_value delegua_objeto_setar(delegua_value objeto, const char *nome, delegua_value value);
 delegua_value delegua_chamar(delegua_value funcao, sz argc, delegua_value *argv);
@@ -435,6 +487,7 @@ delegua_value delegua_assegurar_tipo(delegua_value v, const char *tipo);
 typedef struct delegua_try_frame {
     jmp_buf env;
     struct delegua_try_frame *parent;
+    cgd_gc_root_frame *gc_root_top;
     delegua_value error;
     sz call_depth;
 } delegua_try_frame;
@@ -498,6 +551,10 @@ delegua_value delegua_chamar_membro(delegua_value receiver, const char *name, de
 delegua_value delegua_chamar_ic(delegua_value receiver, const char *name, delegua_value caller,
                                 sz argc, delegua_value *argv, const void **ic);
 delegua_value delegua_chamar_direto(delegua_native_fn fn, sz argc, delegua_value *argv);
+delegua_value delegua_chamar_metodo_fn(delegua_native_fn fn, sz min_args, sz max_args,
+                                       delegua_value receiver, sz argc, delegua_value *argv);
+delegua_value delegua_init_stack_objeto(void *buf, sz buf_bytes, delegua_value klass, sz argc,
+                                        delegua_value *argv);
 delegua_value delegua_conv_inteiro(delegua_value v);
 delegua_value delegua_conv_real(delegua_value v);
 static inline delegua_value delegua_tamanho_val(delegua_value v) {

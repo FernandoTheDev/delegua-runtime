@@ -14,6 +14,7 @@ typedef int (*crypto_memcmp_fn)(const void *a, const void *b, sz len);
 
 static struct {
     void *handle;
+    evp_md_fn sha1;
     evp_md_fn sha256;
     evp_md_fn sha512;
     evp_digest_fn digest;
@@ -42,7 +43,8 @@ static void init_crypto(void) {
     }
     if (!crypto_api.handle)
         return;
-    if (load_sym(crypto_api.handle, "EVP_sha256", &crypto_api.sha256, sizeof(crypto_api.sha256)) &&
+    if (load_sym(crypto_api.handle, "EVP_sha1", &crypto_api.sha1, sizeof(crypto_api.sha1)) &&
+        load_sym(crypto_api.handle, "EVP_sha256", &crypto_api.sha256, sizeof(crypto_api.sha256)) &&
         load_sym(crypto_api.handle, "EVP_sha512", &crypto_api.sha512, sizeof(crypto_api.sha512)) &&
         load_sym(crypto_api.handle, "EVP_Digest", &crypto_api.digest, sizeof(crypto_api.digest)) &&
         load_sym(crypto_api.handle, "HMAC", &crypto_api.hmac, sizeof(crypto_api.hmac)) &&
@@ -61,7 +63,7 @@ static void require_crypto(void) {
 
 static delegua_value to_hex(const unsigned char *bytes, sz len) {
     static const char digits[] = "0123456789abcdef";
-    char *out = GC_MALLOC_ATOMIC(len * 2 + 1);
+    char *out = cgd_gc_alloc_atomic(len * 2 + 1);
     CHECK_NULL(out);
     for (sz i = 0; i < len; i++) {
         out[i * 2] = digits[bytes[i] >> 4];
@@ -119,7 +121,7 @@ delegua_value delegua_ffi_criptoBytesAleatorios(sz argc, delegua_value *argv) {
     if (count < 1 || count > 65536)
         delegua_panic("Quantidade de bytes aleatórios deve estar entre 1 e 65536.");
     require_crypto();
-    char *buf = GC_MALLOC_ATOMIC((sz)count + 1);
+    char *buf = cgd_gc_alloc_atomic((sz)count + 1);
     CHECK_NULL(buf);
     if (crypto_api.rand_bytes((unsigned char *)buf, (int)count) != 1)
         delegua_panic("Falha no gerador criptográfico de entropia.");
@@ -144,4 +146,40 @@ delegua_value delegua_ffi_criptoCompararConstante(sz argc, delegua_value *argv) 
         return create_bool(true);
     return create_bool(crypto_api.memcmp_const(argv[0].value.text.ptr, argv[1].value.text.ptr,
                                                argv[0].value.text.len) == 0);
+}
+
+delegua_value delegua_ffi_criptoWebsocketAccept(sz argc, delegua_value *argv) {
+    static const char magic[] = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+    static const char b64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    CHECK_ARGC(argc, 1);
+    CHECK_ARG_TYPE(argv[0].type, DELEGUA_T_TEXT, 1);
+    require_crypto();
+    sz key_len = argv[0].value.text.len;
+    if (key_len == 0 || key_len > 256)
+        delegua_panic("Chave Sec-WebSocket-Key inválida.");
+    char buf[320];
+    memcpy(buf, argv[0].value.text.ptr, key_len);
+    memcpy(buf + key_len, magic, sizeof(magic) - 1);
+    unsigned char digest[20];
+    unsigned int dlen = 0;
+    if (!crypto_api.digest(buf, key_len + sizeof(magic) - 1, digest, &dlen, crypto_api.sha1(),
+                           NULL) ||
+        dlen != 20)
+        delegua_panic("Falha ao calcular SHA-1 para WebSocket.");
+    /* 20 bytes -> 28 caracteres Base64 */
+    char *out = cgd_gc_alloc_atomic(29);
+    CHECK_NULL(out);
+    sz oi = 0;
+    for (sz i = 0; i < 20; i += 3) {
+        unsigned int a = digest[i];
+        unsigned int b = (i + 1 < 20) ? digest[i + 1] : 0;
+        unsigned int c = (i + 2 < 20) ? digest[i + 2] : 0;
+        unsigned int triple = (a << 16) | (b << 8) | c;
+        out[oi++] = b64[(triple >> 18) & 0x3F];
+        out[oi++] = b64[(triple >> 12) & 0x3F];
+        out[oi++] = (i + 1 < 20) ? b64[(triple >> 6) & 0x3F] : '=';
+        out[oi++] = (i + 2 < 20) ? b64[triple & 0x3F] : '=';
+    }
+    out[oi] = '\0';
+    return (delegua_value){.type = DELEGUA_T_TEXT, .value.text.ptr = out, .value.text.len = oi};
 }

@@ -6,12 +6,16 @@
 i64 rt_real_i64(f64 value);
 i64 rt_parse_int(delegua_value value);
 f64 rt_parse_real(delegua_value value);
-static inline void *rt_alloc(sz count, sz size) {
+static inline void *rt_alloc_kind(sz count, sz size, cgd_gc_kind_t kind) {
     if (size && count > SIZE_MAX / size)
         delegua_panic("Alocação grande demais.");
-    void *p = GC_MALLOC(count * size);
+    void *p = cgd_gc_alloc_kind(count * size, kind);
     CHECK_NULL(p);
     return p;
+}
+
+static inline void *rt_alloc(sz count, sz size) {
+    return rt_alloc_kind(count, size, CGD_GC_KIND_GENERIC);
 }
 
 static inline u64 rt_hash_bytes(const char *ptr, sz len) {
@@ -91,4 +95,14 @@ void rt_detectar_recursos(rt_sistema_recursos *out);
 i64 rt_workers_recomendados(i64 mem_por_tarefa_bytes);
 delegua_value rt_recursos_para_mapa(const rt_sistema_recursos *r);
 i64 rt_ler_proc_kb(const char *path, const char *prefix);
+
+void rt_gc_scan_objetos(cgd_gc_visit_fn visit_ptr, void *ctx);
+void rt_gc_scan_excecoes(cgd_gc_visit_fn visit_ptr,
+                         void (*visit_val)(const delegua_value *v, void *ctx), void *ctx);
+void rt_gc_scan_assincrono(cgd_gc_visit_fn visit_ptr,
+                           void (*visit_val)(const delegua_value *v, void *ctx), void *ctx);
+void rt_gc_scan_assincrono_io(cgd_gc_visit_fn visit_ptr, void *ctx);
+void rt_gc_scan_assincrono_http(cgd_gc_visit_fn visit_ptr, void *ctx);
+void rt_gc_scan_rotinas(cgd_gc_visit_fn visit_ptr, void *ctx);
+void rt_gc_scan_ffi(cgd_gc_visit_fn visit_ptr, void *ctx);
 #endif

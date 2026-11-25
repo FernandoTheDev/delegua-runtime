@@ -185,30 +185,57 @@ delegua_value delegua_ffi_memEstatisticas(sz argc, delegua_value *argv) {
     i64 rss_kb = rt_ler_proc_kb("/proc/self/status", "VmRSS:");
     i64 hwm_kb = rt_ler_proc_kb("/proc/self/status", "VmHWM:");
     i64 pss_kb = rt_ler_proc_kb("/proc/self/smaps_rollup", "Pss:");
+    cgd_gc_stats st;
+    cgd_gc_get_stats(&st);
     delegua_value out = create_map();
     map_item(out, "rssBytes", create_num(rss_kb >= 0 ? rss_kb * 1024 : -1));
     map_item(out, "hwmBytes", create_num(hwm_kb >= 0 ? hwm_kb * 1024 : -1));
     map_item(out, "pssBytes", create_num(pss_kb >= 0 ? pss_kb * 1024 : -1));
-    map_item(out, "heapBytes", create_num((i64)GC_get_heap_size()));
-    map_item(out, "livresBytes", create_num((i64)GC_get_free_bytes()));
-    map_item(out, "desmapeadosBytes", create_num((i64)GC_get_unmapped_bytes()));
-    map_item(out, "emUsoBytes", create_num((i64)GC_get_memory_use()));
-    map_item(out, "alocadosBytes", create_num((i64)GC_get_total_bytes()));
-    map_item(out, "ciclosGC", create_num((i64)GC_get_gc_no()));
-    map_item(out, "tempoGCTotalMs", create_num((i64)GC_get_full_gc_total_time()));
-    map_item(out, "divisorEspacoLivre", create_num((i64)GC_get_free_space_divisor()));
-    map_item(out, "frequenciaColetaCompleta", create_num((i64)GC_get_full_freq()));
-    map_item(out, "paraleloGC", create_bool(GC_get_parallel() != 0));
+    map_item(out, "heapBytes", create_num((i64)st.committed_bytes));
+    map_item(out, "livresBytes", create_num((i64)st.free_bytes));
+    map_item(out, "desmapeadosBytes", create_num((i64)st.unmapped_bytes));
+    map_item(out, "emUsoBytes", create_num((i64)st.live_bytes));
+    map_item(out, "alocadosBytes", create_num((i64)st.total_alloc_bytes));
+    map_item(out, "alocacoesTotal", create_num((i64)st.total_alloc_count));
+    map_item(out, "ciclosGC", create_num((i64)st.cycle_count));
+    map_item(out, "coletasMenores", create_num((i64)st.minor_collections));
+    map_item(out, "coletasMaiores", create_num((i64)st.major_collections));
+    map_item(out, "coletasCompletas", create_num((i64)st.full_collections));
+    map_item(out, "tempoGCTotalMs", create_num((i64)(st.total_gc_time_ns / 1000000ULL)));
+    map_item(out, "tempoMarkUs", create_num((i64)(st.mark_time_ns / 1000ULL)));
+    map_item(out, "tempoSweepUs", create_num((i64)(st.sweep_time_ns / 1000ULL)));
+    map_item(out, "pausaMediaUs", create_num((i64)(st.avg_pause_ns / 1000ULL)));
+    map_item(out, "pausaMaxUs", create_num((i64)(st.max_pause_ns / 1000ULL)));
+    map_item(out, "pausaP50Us", create_num((i64)(st.p50_pause_ns / 1000ULL)));
+    map_item(out, "pausaP95Us", create_num((i64)(st.p95_pause_ns / 1000ULL)));
+    map_item(out, "pausaP99Us", create_num((i64)(st.p99_pause_ns / 1000ULL)));
+    map_item(out, "pausaP999Us", create_num((i64)(st.p999_pause_ns / 1000ULL)));
+    map_item(out, "jovemBytes", create_num((i64)st.young_bytes));
+    map_item(out, "antigoBytes", create_num((i64)st.old_bytes));
+    map_item(out, "grandesBytes", create_num((i64)st.large_bytes));
+    map_item(out, "promovidosBytes", create_num((i64)st.promoted_bytes));
+    map_item(out, "recuperadosBytes", create_num((i64)st.reclaimed_bytes));
+    map_item(out, "liberadosDeterministicos", create_num((i64)st.deterministic_free_count));
+    map_item(out, "liberadosDeterministicosBytes", create_num((i64)st.deterministic_free_bytes));
+    map_item(out, "barreirasEscrita", create_num((i64)st.write_barriers_hit));
+    map_item(out, "cardsSujosVarredos", create_num((i64)st.dirty_cards_scanned));
+    map_item(out, "regioesAtivas", create_num((i64)st.active_regions));
+    map_item(out, "regioesLivres", create_num((i64)st.free_regions));
+    map_item(out, "objetosFixados", create_num((i64)st.pinned_objects));
+    map_item(out, "handlesAtivos", create_num((i64)st.active_handles));
+    map_item(out, "taxaSobrevivencia", create_real(st.survival_rate));
+    map_item(out, "fragmentacao", create_real(st.fragmentation_ratio));
+    map_item(out, "divisorEspacoLivre", create_num((i64)st.divisor));
+    map_item(out, "frequenciaColetaCompleta", create_num((i64)st.full_freq));
+    map_item(out, "paraleloGC", create_bool(st.parallel_enabled));
+    map_item(out, "backendGC", create_text(st.backend_name ? st.backend_name : "cgd"));
     return out;
 }
 
 delegua_value delegua_ffi_memColetar(sz argc, delegua_value *argv) {
     CHECK_ARGC(argc, 1);
     CHECK_ARG_TYPE(argv[0].type, DELEGUA_T_BOOL, 1);
-    if (argv[0].value.b1)
-        GC_gcollect_and_unmap();
-    else
-        GC_gcollect();
+    cgd_gc_collect(argv[0].value.b1);
     return create_nulo();
 }
 
@@ -219,11 +246,8 @@ delegua_value delegua_ffi_memColetarSeAcima(sz argc, delegua_value *argv) {
     i64 limite = argv[0].value.num;
     if (limite <= 0)
         return create_bool(false);
-    if ((i64)GC_get_heap_size() >= limite) {
-        if (argv[1].value.b1)
-            GC_gcollect_and_unmap();
-        else
-            GC_gcollect();
+    if ((i64)cgd_gc_heap_size() >= limite) {
+        cgd_gc_collect(argv[1].value.b1);
         return create_bool(true);
     }
     return create_bool(false);
@@ -235,14 +259,14 @@ delegua_value delegua_ffi_memDefinirDivisor(sz argc, delegua_value *argv) {
     i64 div = argv[0].value.num;
     if (div < 1 || div > 64)
         delegua_panic("Memoria: divisorEspacoLivre deve estar entre 1 e 64.");
-    GC_set_free_space_divisor((GC_word)div);
+    cgd_gc_set_divisor((int)div);
     return create_nulo();
 }
 
 delegua_value delegua_ffi_memObterDivisor(sz argc, delegua_value *argv) {
     CHECK_ARGC(argc, 0);
     (void)argv;
-    return create_num((i64)GC_get_free_space_divisor());
+    return create_num((i64)cgd_gc_get_divisor());
 }
 
 delegua_value delegua_ffi_memDefinirFreqCompleta(sz argc, delegua_value *argv) {
@@ -251,7 +275,7 @@ delegua_value delegua_ffi_memDefinirFreqCompleta(sz argc, delegua_value *argv) {
     i64 freq = argv[0].value.num;
     if (freq < 1 || freq > 100)
         delegua_panic("Memoria: frequenciaColetaCompleta deve estar entre 1 e 100.");
-    GC_set_full_freq((int)freq);
+    cgd_gc_set_full_freq((int)freq);
     return create_nulo();
 }
 
@@ -263,7 +287,7 @@ delegua_value delegua_ffi_memExpandirHeap(sz argc, delegua_value *argv) {
         delegua_panic("Memoria: expansão de heap deve estar entre 0 e 512 MiB.");
     if (bytes == 0)
         return create_bool(true);
-    return create_bool(GC_expand_hp((size_t)bytes) != 0);
+    return create_bool(cgd_gc_expand_heap((size_t)bytes));
 }
 
 /* --- Arena binária segura --- */
@@ -280,12 +304,13 @@ delegua_value delegua_ffi_arenaCriar(sz argc, delegua_value *argv) {
         delegua_panic("Memoria: limite máximo da Arena deve estar entre 4 KiB e 256 MiB.");
     if (init_cap > max_bytes)
         init_cap = max_bytes;
-    rt_arena *a = rt_alloc(1, sizeof(*a));
+    rt_arena *a = cgd_gc_alloc_atomic(sizeof(*a));
+    CHECK_NULL(a);
     a->initial_cap = init_cap > 0 ? (sz)init_cap : ARENA_MIN_CHUNK;
     a->max_bytes = (sz)max_bytes;
     a->generation = 1;
     a->closed = false;
-    GC_register_finalizer_no_order(a, arena_finalizer, NULL, NULL, NULL);
+    cgd_gc_register_finalizer(a, arena_finalizer, NULL);
     if (init_cap > 0)
         (void)arena_add_chunk(a, (sz)init_cap);
     return (delegua_value){.type = DELEGUA_T_ARENA, .value.ptr = a};
@@ -311,7 +336,7 @@ delegua_value delegua_ffi_arenaLiberar(sz argc, delegua_value *argv) {
     if (!a->closed) {
         a->closed = true;
         a->generation++;
-        GC_register_finalizer_no_order(a, NULL, NULL, NULL, NULL);
+        cgd_gc_register_finalizer(a, NULL, NULL);
         arena_free_chunks(a);
     }
     return create_nulo();
@@ -348,6 +373,7 @@ delegua_value delegua_ffi_arenaAlocarBytes(sz argc, delegua_value *argv) {
     unsigned char *ptr = n > 0 ? arena_bump(a, (sz)n, 8, zero_fill) : NULL;
     rt_arena_slice *s = rt_alloc(1, sizeof(*s));
     s->arena = a;
+    cgd_gc_write_barrier_ptr(s, a);
     s->ptr = ptr;
     s->len = zero_fill ? (sz)n : 0;
     s->cap = (sz)n;
@@ -374,6 +400,7 @@ delegua_value delegua_ffi_arenaAlocarInt64(sz argc, delegua_value *argv) {
     }
     rt_arena_slice *s = rt_alloc(1, sizeof(*s));
     s->arena = a;
+    cgd_gc_write_barrier_ptr(s, a);
     s->ptr = ptr;
     s->len = (sz)count;
     s->cap = (sz)count;
